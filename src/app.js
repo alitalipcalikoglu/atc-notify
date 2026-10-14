@@ -5,6 +5,7 @@ import { AuditClient } from '@atc-web/atc-service-core/audit';
 import { registerInfo, registerOpenApi, registerProbes, registerRequestContext, requestOptions } from '@atc-web/atc-service-core/fastify';
 import { ApiKeyAuth } from './auth.js';
 import { IdempotencyConflictError, InvalidCursorError } from './queue.js';
+import { AuditMetrics } from './audit-metrics.js';
 
 /** @typedef {import('./config.js').Config} Config */
 /** @typedef {import('./types.js').MessageRow} MessageRow */
@@ -323,6 +324,7 @@ export class NotifyApi {
         '# HELP notify_worker_up 1 if a worker process is currently alive (this process itself, or another one reporting through worker_heartbeat), else 0.',
         '# TYPE notify_worker_up gauge',
         `notify_worker_up ${this.workerStatus() === 'running' ? 1 : 0}`,
+        ...AuditMetrics.lines(this.audit),
         '# HELP notify_process_uptime_seconds Process uptime.',
         '# TYPE notify_process_uptime_seconds gauge',
         `notify_process_uptime_seconds ${process.uptime().toFixed(0)}`,
