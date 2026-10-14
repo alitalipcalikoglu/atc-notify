@@ -184,8 +184,7 @@ already DB-backed before this split (never read an in-process `Worker` field); a
 ## Lease ownership and scaling model
 
 **Scaling class: B — single-node stateful, but "single-node" now means one HOST, not one
-PROCESS.** (See `atc-stack/docs/ARCHITECTURE_AUDIT.md` and `atc-stack/docs/READINESS_TEMPLATE.md` for the
-class definitions.)
+PROCESS.** (See `atc-stack/docs/READINESS_TEMPLATE.md` for the class definitions.)
 
 Every claimed batch of messages gets a fencing token (`owner_token`) and a lease (`locked_until`,
 the same column this service always had, now fencing-checked on write too). A worker renews the
