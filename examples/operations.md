@@ -50,7 +50,7 @@ Logs are JSON lines (pino). `req.headers.authorization` is redacted. Recipient a
 
 ```bash
 docker build -t atc-notify .
-docker run -d -p 3001:3001 -v notify-data:/data --env-file .env atc-notify
+docker run -d -p 3001:3001 -v atc-notify-data:/data --env-file .env atc-notify
 ```
 
 The SQLite file lives in `/data`; keep the volume.

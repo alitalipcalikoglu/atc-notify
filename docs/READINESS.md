@@ -1,8 +1,8 @@
-# `notify` readiness contract
+# `atc-notify` readiness contract
 
 ## Purpose
-`notify` is the platform's queued delivery service: other services enqueue a notification
-(templated email over SMTP, or a signed webhook) via `POST /v1/messages`; `notify` persists it in
+`atc-notify` is the platform's queued delivery service: other services enqueue a notification
+(templated email over SMTP, or a signed webhook) via `POST /v1/messages`; `atc-notify` persists it in
 SQLite, renders and delivers it from an in-process background worker with retries and backoff, and
 exposes delivery status and lifecycle through `GET` endpoints. It lets the rest of the platform
 fire-and-forget notifications without every caller embedding its own SMTP/webhook client, retry
@@ -12,10 +12,10 @@ logic and delivery-state bookkeeping.
 - **audit service** (`AUDIT_URL` + `AUDIT_API_KEY`): optional, but the two env vars must be set
   together — `Config.fromEnv` throws `ConfigError` at startup if only one is set, so there is no
   half-configured state. When unset, `AuditClient.target` is `null`, `enabled` is `false`, and
-  `record()` is a no-op that returns `false` — every `notify` write proceeds normally with no audit
+  `record()` is a no-op that returns `false` — every `atc-notify` write proceeds normally with no audit
   trail. When set, forwarding is buffered and fire-and-forget: `record()` only pushes to an
   in-memory array on the request path; the actual HTTP call happens later on a timer. Audit being
-  down never fails or slows a `notify` request (confirmed in `audit.test.js`'s "dead" case: a
+  down never fails or slows a `atc-notify` request (confirmed in `audit.test.js`'s "dead" case: a
   permanently-unreachable audit target leaves `stats.failed` incremented and the event kept in
   `buffer` for the next flush — nothing propagates back to the caller).
 - **SMTP server** (`SMTP_URL`): required at startup — `Config.fromEnv` throws if missing, or if it
@@ -80,7 +80,7 @@ re-probing. Returns `200 {status:'ok', worker:'running'|'stopped'}` when the cac
 discarded — the only side effect is, at most once per 30 s, a DB read and an SMTP handshake
 attempt, neither of which writes to the `messages` table or touches queued work.
 
-The `worker` field (Stage 6) is DB-backed in every role, unlike `scheduler`/`webhook-out`: notify's
+The `worker` field (Stage 6) is DB-backed in every role, unlike `atc-scheduler`/`atc-webhook-out`: notify's
 readiness/stats never read an in-process `Worker` field even before this stage, so there was no
 role-dependent branch to add — `NotifyApi#workerStatus()` always reads the `worker_heartbeat`
 table's most recent row and reports `"running"` when it is fresher than `HEARTBEAT_MS * 4`
@@ -112,7 +112,7 @@ why):
 6. `this.db.close()`.
 
 **Before Stage 6** step 5 (audit flush) was step 2, running *before* the worker drained — see
-`scheduler`'s identical fix for the general reasoning (a message finishing during drain and
+`atc-scheduler`'s identical fix for the general reasoning (a message finishing during drain and
 needing to record an audit event could queue it into an already-flushed, already-stopped buffer).
 
 On success: `process.exit(0)`. Force-exit timeout: a `setTimeout(...).unref()` set to
@@ -133,15 +133,15 @@ run far longer than `LOCK_TTL_MS` as long as it keeps renewing the lease, so bou
 external call can legitimately take, so `callCeilingMs` replaces `lockTtlMs` as the basis for both
 `drainMs` and `forceExitMs`.
 
-Comparison with PM2: `notify/ecosystem.config.cjs` sets `kill_timeout: 150000` (150 s; was `630000`,
+Comparison with PM2: `atc-notify/ecosystem.config.cjs` sets `kill_timeout: 150000` (150 s; was `630000`,
 sized for the old `lockTtlMs`-based formula and left comfortably oversized once `forceExitMs`
 dropped to a call-duration basis). `150_000 = max(SMTP_WORST_CASE_MS=50_000,
 WEBHOOK_TIMEOUT_MS max 120_000) + 10_000 (force-exit margin) = 130_000`, plus `20_000` headroom —
 comfortably above the worst-case force-exit timer regardless of how `WEBHOOK_TIMEOUT_MS` is
 configured within its validated range.
 
-The five numbers that matter for notify's shutdown, in the same relationship as `scheduler` and
-`webhook-out`: worker drain timeout (`drainMs = callCeilingMs + 5_000`); the external call's own
+The five numbers that matter for notify's shutdown, in the same relationship as `atc-scheduler` and
+`atc-webhook-out`: worker drain timeout (`drainMs = callCeilingMs + 5_000`); the external call's own
 timeout ceiling (`callCeilingMs`, the larger of the SMTP worst case and `WEBHOOK_TIMEOUT_MS`); the
 heartbeat interval (`HEARTBEAT_MS`) that renews a lease during an in-flight call; the lease TTL
 (`LOCK_TTL_MS`), now fully decoupled from call duration by the heartbeat; and PM2's `kill_timeout`
@@ -236,7 +236,7 @@ chance to exit on its own.
   retry after an ambiguous outcome (e.g. the SMTP server accepted before the socket closed, or a
   webhook receiver processed the request but the response timed out) can produce a duplicate send.
   The only correlation token offered to receivers is the `X-Notify-Id` header — deduplication on
-  that id is the receiver's responsibility, not something `notify` enforces.
+  that id is the receiver's responsibility, not something `atc-notify` enforces.
 
 ## Backup
 State that needs to survive a disk loss: the single SQLite file at `DB_PATH` (plus its `-wal`/
@@ -246,9 +246,9 @@ no dump script, no scheduled snapshot. Capturing it today means an operator stop
 the WAL first) and copying the file themselves; nothing here automates it.
 
 ## Restore
-No restore tooling exists in the codebase either. The exact steps today: stop the `notify` process
+No restore tooling exists in the codebase either. The exact steps today: stop the `atc-notify` process
 (`pm2 stop notify`), replace `DB_PATH` (and any `-wal`/`-shm` files) with the backup copy, restart
-(`pm2 start`/`pm2 restart`). There is no ordering constraint with other services' data — `notify`
+(`pm2 start`/`pm2 restart`). There is no ordering constraint with other services' data — `atc-notify`
 does not embed foreign keys or references that require another service's data to be restored
 first or in lockstep; `api_key_id` on each row is just the caller's own key id, not a reference
 into another service's database.
@@ -271,7 +271,7 @@ tests), so it is neither durable nor currently surfaced as a metric at all.
 Fastify's default structured request logging is active (`config.logLevel`, or an injected
 `loggerInstance`), with `req.headers.authorization` redacted. `requestIdHeader: 'x-request-id'` is
 set in `src/app.js`, so per the vocabulary in
-[OBSERVABILITY.md](../../stack/docs/OBSERVABILITY.md), `notify` emits `reqId` on every request log
+[OBSERVABILITY.md](../../atc-stack/docs/OBSERVABILITY.md), `atc-notify` emits `reqId` on every request log
 line, accepting whatever `X-Request-Id` a caller sends and generating one via `randomUUID()` only
 when absent — this is unconditional and predates this review, not new behaviour. Worker and
 delivery logs add their own structured fields (`messageId`, `channel`, `attempt`, `durationMs`,
@@ -280,22 +280,22 @@ field names rather than the OBSERVABILITY.md vocabulary, even where a name happe
 (`durationMs` here is manually computed in `worker.js`, not Fastify's own `responseTime`, which is
 what the vocabulary treats as the equivalent field for HTTP requests).
 
-Fields from the OBSERVABILITY.md vocabulary that `notify` does **not** yet emit (`traceId`/`spanId`
+Fields from the OBSERVABILITY.md vocabulary that `atc-notify` does **not** yet emit (`traceId`/`spanId`
 are now emitted — see Tracing below): a normalised `route`/`op` (only Fastify's implicit `req.url`
-is available), `upstream` / `upstreamMs` (`notify` doesn't proxy), `service`, `version`, and `code`
+is available), `upstream` / `upstreamMs` (`atc-notify` doesn't proxy), `service`, `version`, and `code`
 (present in the HTTP error body but not echoed into the log line itself).
 
 ## Tracing
-`notify` parses an inbound `traceparent` via `@atc-web/atc-service-core`'s `registerRequestContext`,
+`atc-notify` parses an inbound `traceparent` via `@atc-web/atc-service-core`'s `registerRequestContext`,
 trust-gated on `TRUST_PROXY` (same boundary as `X-Forwarded-*`, per OBSERVABILITY.md): trusted, the
 caller's trace-id is continued with a fresh span-id for this hop; untrusted or malformed, a fresh
 trace is started. Both `traceId`/`spanId` are logged on every request line (post-production Phase
-5). `notify` does already accept and log an inbound `X-Request-Id` (`requestIdHeader:
+5). `atc-notify` does already accept and log an inbound `X-Request-Id` (`requestIdHeader:
 'x-request-id'` in `src/app.js`, confirmed by reading the file in this session) — unconditionally,
-with no trust-boundary gate, because `notify` is only ever reached from other internal services,
+with no trust-boundary gate, because `atc-notify` is only ever reached from other internal services,
 never directly from an untrusted client.
 
-Outbound, `notify`'s own calls do not forward either header onward:
+Outbound, `atc-notify`'s own calls do not forward either header onward:
 - SMTP send (`src/channels/email.js`): no request-id or trace header of any kind is attached to
   the outbound mail; nodemailer's headers option only carries `X-Notify-Id` (the message id).
 - Webhook POST (`src/channels/webhook.js`): headers sent are `content-type`, `content-length`,
@@ -342,7 +342,7 @@ never overwrite the row when it eventually returns. `Queue#reclaimExpired` (call
 strictly expired — `locked_until < now`, so `now == locked_until` is NOT yet expired, the same
 invariant as claim/heartbeat/finish (Stage 6.1 regression test: `test/queue.test.js`'s
 `reclaimExpired` boundary assertions) — inside one transaction with every write, the same
-race-free construction as `scheduler`'s identical primitive (see its README for the full "why one
+race-free construction as `atc-scheduler`'s identical primitive (see its README for the full "why one
 transaction" reasoning). What it does with each expired row now depends on `call_started_at`
 (Stage 6.1, `messages.call_started_at`, set by `Worker#deliver()` right before the channel's
 `deliver()` call, cleared on every write leaving `'processing'`):
@@ -386,7 +386,7 @@ never reached the delivery-attempt boundary at all.
 ## Scaling model
 **B — single-node stateful, but "single-node" now means one HOST, not one PROCESS.** One SQLite
 (`node:sqlite`) file at `DB_PATH`. `ecosystem.config.cjs`'s default (combined) app still pins
-`instances: 1`, but the commented-out split `notify-worker` app documents raising its own
+`instances: 1`, but the commented-out split `atc-notify-worker` app documents raising its own
 `instances` above 1 as a supported topology.
 
 Two (or more) worker processes pointed at the same file: message claiming itself does not
@@ -407,7 +407,7 @@ Stage 6 makes. Both/all instances compete for the same claim batches under real 
 serialization (not corruption, just contention under very high claim rates). A simultaneous first
 boot of two or more instances against a brand-new (or pending-migration) database file is
 migration-safe as of `@atc-web/atc-service-core` v1.10.1 (post-production Phase 1) — no staggered-start
-workaround is needed; see `stack/docs/UPGRADE.md`'s "Worker-split rollout ordering" for the exact
+workaround is needed; see `atc-stack/docs/UPGRADE.md`'s "Worker-split rollout ordering" for the exact
 guarantee and its boundary (same host, local SQLite file only).
 
 ## Known failure modes

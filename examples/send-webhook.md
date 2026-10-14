@@ -2,7 +2,7 @@
 
 **Legacy, one-off calls only.** This channel is a simple signed POST with no subscription model,
 secret rotation, replay or delivery history — for durable/retry-oriented delivery to external
-partners (subscriptions, replay, rotation), use `webhook-out` instead. It can also be turned off
+partners (subscriptions, replay, rotation), use `atc-webhook-out` instead. It can also be turned off
 entirely with `NOTIFY_WEBHOOK_CHANNEL=false`, in which case this request is rejected with `403
 WEBHOOK_CHANNEL_DISABLED` (email is unaffected).
 

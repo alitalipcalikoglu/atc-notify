@@ -15,7 +15,7 @@ export const WEBHOOK_SECRET = 's'.repeat(40);
 /**
  * An OS-assigned free TCP port, so a test that actually binds `PORT` (unlike most of this suite,
  * which never starts a real listener) never collides with whatever else happens to be running on
- * the host. `notify`'s own `PORT` validator requires >=1 (unlike a few sibling services), so `'0'`
+ * the host. `atc-notify`'s own `PORT` validator requires >=1 (unlike a few sibling services), so `'0'`
  * itself is not a valid override here — a real, already-free port number is required instead.
  * @returns {Promise<number>}
  */

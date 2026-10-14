@@ -19,7 +19,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
  * ends an attempt (`markSent`/`markFailure`) is guarded by that same `owner_token`, so a worker
  * that hung long enough to be reclaimed by someone else can never overwrite the row when it
  * eventually returns — its write simply matches zero rows and is discarded (logged, not thrown).
- * See `scheduler`'s `worker.js` for the identical design, kept as an independent copy per service.
+ * See `atc-scheduler`'s `worker.js` for the identical design, kept as an independent copy per service.
  */
 export class Worker {
   static MAINTENANCE_INTERVAL_MS = 60_000;

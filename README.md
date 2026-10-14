@@ -1,6 +1,6 @@
 # atc-notify
 
-Queued, retried notification delivery over HTTP. Other services enqueue a message; `notify` renders it, delivers it (email over SMTP, or a signed webhook) and keeps a delivery record.
+Queued, retried notification delivery over HTTP. Other services enqueue a message; `atc-notify` renders it, delivers it (email over SMTP, or a signed webhook) and keeps a delivery record.
 
 Runtime dependencies: `fastify`, `@fastify/rate-limit`, `nodemailer`. Storage is SQLite via `node:sqlite` (built into Node 22.13+, no native build). The folder is self-contained: copy it to any host with Node 22 and run.
 
@@ -27,7 +27,7 @@ Production with Docker:
 
 ```bash
 docker build -t atc-notify .
-docker run -p 3001:3001 -v notify-data:/data --env-file .env atc-notify
+docker run -p 3001:3001 -v atc-notify-data:/data --env-file .env atc-notify
 ```
 
 Tests and type check:
@@ -43,7 +43,7 @@ npm run typecheck
 
 **Responsibilities:** template rendering; SMTP delivery with retry/backoff; a legacy signed-webhook channel for one-off calls (`NOTIFY_WEBHOOK_CHANNEL`, see below); idempotency-key dedup; per-message delivery status.
 
-**Non-responsibilities:** notify ≠ durable webhook platform. Its webhook channel is explicitly a legacy path for simple one-off calls — it has no subscription model, no secret rotation, no replay, no delivery history browsing beyond a single message's own status. New durable/retry-oriented webhook integrations belong in `webhook-out`, not here. Notify also does not manage recipient subscriptions or preferences — every send is caller-supplied, per message.
+**Non-responsibilities:** notify ≠ durable webhook platform. Its webhook channel is explicitly a legacy path for simple one-off calls — it has no subscription model, no secret rotation, no replay, no delivery history browsing beyond a single message's own status. New durable/retry-oriented webhook integrations belong in `atc-webhook-out`, not here. Notify also does not manage recipient subscriptions or preferences — every send is caller-supplied, per message.
 
 ## Running on its own server
 
@@ -68,7 +68,7 @@ Required: `NOTIFY_API_KEYS`, `SMTP_URL`, `SMTP_FROM`, `WEBHOOK_SIGNING_SECRET`.
 - `SMTP_URL` is a nodemailer connection URL such as `smtps://user:pass@host:465`. `json:` logs mails instead of sending (development).
 - `TLS_CERT_PATH` / `TLS_KEY_PATH` enable native HTTPS; both or neither.
 - `WEBHOOK_ALLOWED_HOSTS` restricts webhook targets to the listed hosts and their subdomains. Leave empty to allow any public host.
-- `NOTIFY_WEBHOOK_CHANNEL` (default `true`) — turns the legacy signed-webhook channel off when set to `false`. Existing deployments are unaffected by default. When `false`: `POST /v1/messages` with `channel: "webhook"` is rejected with `403 WEBHOOK_CHANNEL_DISABLED` before it's queued; email is unaffected. Anything already `queued`/`processing` under the webhook channel at the moment it's disabled is still claimed by the worker on its normal schedule, but settles to a deterministic terminal `failed` (one attempt cost, no backoff, `last_error` names the reason) instead of attempting delivery or sitting stuck forever — never a silent drop, never an infinite retry loop. New durable/retry-oriented webhook integrations should use `webhook-out` instead of turning this back on.
+- `NOTIFY_WEBHOOK_CHANNEL` (default `true`) — turns the legacy signed-webhook channel off when set to `false`. Existing deployments are unaffected by default. When `false`: `POST /v1/messages` with `channel: "webhook"` is rejected with `403 WEBHOOK_CHANNEL_DISABLED` before it's queued; email is unaffected. Anything already `queued`/`processing` under the webhook channel at the moment it's disabled is still claimed by the worker on its normal schedule, but settles to a deterministic terminal `failed` (one attempt cost, no backoff, `last_error` names the reason) instead of attempting delivery or sitting stuck forever — never a silent drop, never an infinite retry loop. New durable/retry-oriented webhook integrations should use `atc-webhook-out` instead of turning this back on.
 
 ## API
 
@@ -105,7 +105,7 @@ Adding a template: subclass `EmailTemplate` in `src/templates/<name>.js` (overri
 
 ### Webhook
 
-**Legacy signed webhook for one-off calls.** This is a simple, one-shot signed POST, not a durable delivery platform — no subscriptions, no secret rotation, no replay, no per-endpoint delivery history. For anything durable/retry-oriented (recurring event delivery to external partners, subscription management, replay), use `webhook-out` instead. Can be turned off entirely with `NOTIFY_WEBHOOK_CHANNEL=false` (see Configuration) without affecting email.
+**Legacy signed webhook for one-off calls.** This is a simple, one-shot signed POST, not a durable delivery platform — no subscriptions, no secret rotation, no replay, no per-endpoint delivery history. For anything durable/retry-oriented (recurring event delivery to external partners, subscription management, replay), use `atc-webhook-out` instead. Can be turned off entirely with `NOTIFY_WEBHOOK_CHANNEL=false` (see Configuration) without affecting email.
 
 ```json
 {
@@ -184,7 +184,7 @@ already DB-backed before this split (never read an in-process `Worker` field); a
 ## Lease ownership and scaling model
 
 **Scaling class: B — single-node stateful, but "single-node" now means one HOST, not one
-PROCESS.** (See `stack/docs/ARCHITECTURE_AUDIT.md` and `stack/docs/READINESS_TEMPLATE.md` for the
+PROCESS.** (See `atc-stack/docs/ARCHITECTURE_AUDIT.md` and `atc-stack/docs/READINESS_TEMPLATE.md` for the
 class definitions.)
 
 Every claimed batch of messages gets a fencing token (`owner_token`) and a lease (`locked_until`,
@@ -198,7 +198,7 @@ reclaimed lock was reset for free, with no attempt cost) — and the fencing tok
 worker cannot overwrite that outcome if it later finishes the send it no longer owns.
 
 This makes **multiple worker processes against the same `DB_PATH` a supported topology**: the
-commented-out split `notify-worker` app in `ecosystem.config.cjs` can run with `instances` > 1.
+commented-out split `atc-notify-worker` app in `ecosystem.config.cjs` can run with `instances` > 1.
 Claiming is atomic across processes (one `UPDATE ... RETURNING` statement), proven with real
 cross-connection concurrency in `test/lease-concurrency.test.js`. Still one host, one SQLite file —
 not a distributed queue; horizontal scaling across hosts still means moving to a server database.
@@ -206,12 +206,12 @@ See [docs/READINESS.md](docs/READINESS.md) for the full contract.
 
 ## Observability
 
-`notify` accepts and logs whatever `X-Request-Id` a caller sends (generating one when absent) and
+`atc-notify` accepts and logs whatever `X-Request-Id` a caller sends (generating one when absent) and
 also parses an inbound `traceparent` via `@atc-web/atc-service-core`'s `registerRequestContext`,
 trust-gated on `TRUST_PROXY` (same boundary as `X-Forwarded-*`): trusted, the caller's trace-id is
 continued with a fresh span-id; untrusted or malformed, a fresh trace is started. Both
 `traceId`/`spanId` are logged on every request line — see the platform's
-[OBSERVABILITY.md](../stack/docs/OBSERVABILITY.md). Outbound SMTP sends and webhook
+[OBSERVABILITY.md](../atc-stack/docs/OBSERVABILITY.md). Outbound SMTP sends and webhook
 POSTs carry `X-Notify-Id` but no request-id or trace header. See
 [docs/READINESS.md](docs/READINESS.md) for the full contract.
 
@@ -219,7 +219,7 @@ POSTs carry `X-Notify-Id` but no request-id or trace header. See
 
 The only state to protect is the SQLite file at `DB_PATH` (WAL mode, so its `-wal`/`-shm`
 companions matter too). Use `stack backup`/`stack restore` from the workspace root (see
-`stack/docs/UPGRADE.md`) to snapshot and restore this consistently alongside the rest of the stack.
+`atc-stack/docs/UPGRADE.md`) to snapshot and restore this consistently alongside the rest of the stack.
 On every start, before applying a pending migration to an existing database, the service itself
 also snapshots the file to `DB_PATH.pre-v<N>-<timestamp>` (directory overridable with
 `DB_BACKUP_DIR`) — a manual last resort if `stack restore` is unavailable.

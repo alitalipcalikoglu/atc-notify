@@ -521,11 +521,13 @@ components:
       required: [service, version, apiVersion, capabilities, schemaVersion, serviceCore]
       properties:
         service:
-          const: notify
+          type: string
+          const: atc-notify
         version:
           type: string
           description: This service's own package.json semver.
         apiVersion:
+          type: string
           const: v1
         capabilities:
           type: array
