@@ -23,6 +23,7 @@ export class MessageView {
     const iso = (/** @type {number|null} */ ms) => (ms === null ? null : new Date(ms).toISOString());
     return {
       id: row.id,
+      keyId: row.api_key_id,
       channel: row.channel,
       status: row.status,
       template: payload.template,
@@ -85,6 +86,7 @@ class Schemas {
     type: 'object',
     properties: {
       id: Schemas.uuid,
+      keyId: { type: 'string' },
       channel: { type: 'string' },
       status: { type: 'string' },
       template: { type: 'string' },
@@ -166,6 +168,7 @@ export class NotifyApi {
     });
     registerRequestContext(app, { trustProxy: config.trustProxy });
     app.decorateRequest('apiKeyId', '');
+    app.decorateRequest('apiKeyRole', 'readwrite');
     app.setErrorHandler(this.#errorHandler);
     app.addHook('onSend', AuditClient.hook(this.audit));
     app.setNotFoundHandler((_request, reply) => {
@@ -227,7 +230,7 @@ export class NotifyApi {
     });
     api.addHook('onReady', async () => this.#compileDataValidators(api));
 
-    api.post('/messages', { config: { audit: AuditClient.route('atc-notify.message.create', (_r, b) => ({ type: 'message', id: b.id }), (_r, b) => ({ channel: b?.channel, status: b?.status })) },
+    api.post('/messages', { preHandler: this.#needWrite, config: { audit: AuditClient.route('atc-notify.message.create', (_r, b) => ({ type: 'message', id: b.id }), (_r, b) => ({ channel: b?.channel, status: b?.status })) },
       schema: {
         body: Schemas.emailBody(this.templates.names()),
         response: { 200: Schemas.message, 202: Schemas.message, 400: Schemas.error },
@@ -236,7 +239,7 @@ export class NotifyApi {
 
     api.get('/messages', { schema: { querystring: Schemas.listQuery } }, this.#listMessages);
     api.get('/messages/:id', { schema: { params: Schemas.idParams, response: { 200: Schemas.message, 404: Schemas.error } } }, this.#getMessage);
-    api.post('/messages/:id/retry', { config: { audit: AuditClient.route('atc-notify.message.retry', (r) => ({ type: 'message', id: /** @type {any} */ (r.params).id })) },
+    api.post('/messages/:id/retry', { preHandler: this.#needWrite, config: { audit: AuditClient.route('atc-notify.message.retry', (r) => ({ type: 'message', id: /** @type {any} */ (r.params).id })) },
       schema: { params: Schemas.idParams, response: { 200: Schemas.message, 404: Schemas.error, 409: Schemas.error } },
     }, this.#retryMessage);
     api.get('/templates', async () => ({ items: this.templates.describe() }));
@@ -253,6 +256,16 @@ export class NotifyApi {
       const compiled = compiler({ schema: t.schema, method: 'POST', url: '/v1/messages', httpPart: 'body' });
       this.dataValidators.set(t.name, /** @type {DataValidator} */ (compiled));
     }
+  }
+
+  /** Sending and retrying need `readwrite` or `admin`; a `read` key only looks. */
+  #needWrite = async (/** @type {import('fastify').FastifyRequest} */ request) => {
+    if (request.apiKeyRole === 'read') throw Object.assign(new Error('this key is read-only'), { statusCode: 403, code: 'FORBIDDEN' });
+  };
+
+  /** Which messages the caller may see: its own, or every key's for an admin key. @param {import('fastify').FastifyRequest} request */
+  static #scope(request) {
+    return request.apiKeyRole === 'admin' ? null : request.apiKeyId;
   }
 
   /** @type {import('fastify').RouteHandlerMethod} */
@@ -279,14 +292,14 @@ export class NotifyApi {
   #listMessages = async (request) => {
     const q = /** @type {{ status?: MessageStatus, limit?: string, cursor?: string }} */ (request.query);
     const { items, nextCursor } = this.queue.list({
-      apiKeyId: request.apiKeyId, status: q.status, limit: q.limit ? Number(q.limit) : 20, cursor: q.cursor,
+      apiKeyId: NotifyApi.#scope(request), status: q.status, limit: q.limit ? Number(q.limit) : 20, cursor: q.cursor,
     });
     return { items: items.map(MessageView.from), nextCursor };
   };
 
   /** @type {import('fastify').RouteHandlerMethod} */
   #getMessage = async (request, reply) => {
-    const row = this.queue.get(/** @type {{ id: string }} */ (request.params).id, request.apiKeyId);
+    const row = this.queue.get(/** @type {{ id: string }} */ (request.params).id, NotifyApi.#scope(request));
     if (!row) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'message not found' } });
     return MessageView.from(row);
   };
@@ -294,12 +307,12 @@ export class NotifyApi {
   /** @type {import('fastify').RouteHandlerMethod} */
   #retryMessage = async (request, reply) => {
     const { id } = /** @type {{ id: string }} */ (request.params);
-    const row = this.queue.retry(id, request.apiKeyId);
+    const row = this.queue.retry(id, NotifyApi.#scope(request));
     if (row) {
       request.log.info({ messageId: id }, 'message manually re-queued');
       return MessageView.from(row);
     }
-    const existing = this.queue.get(id, request.apiKeyId);
+    const existing = this.queue.get(id, NotifyApi.#scope(request));
     if (!existing) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'message not found' } });
     return reply.code(409).send({ error: { code: 'NOT_RETRYABLE', message: `message is ${existing.status}, only failed messages can be retried` } });
   };

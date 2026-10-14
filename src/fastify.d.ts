@@ -4,6 +4,7 @@ import 'fastify';
 declare module 'fastify' {
   interface FastifyRequest {
     apiKeyId: string;
+    apiKeyRole: 'read' | 'readwrite' | 'admin';
   }
   interface FastifyContextConfig {
     audit?: import('@atc-web/atc-service-core/audit').AuditRouteConfig;

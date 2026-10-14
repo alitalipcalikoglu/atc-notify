@@ -7,6 +7,7 @@
  * @typedef {object} ApiKey
  * @property {string} id      Short identifier used for scoping and rate limiting.
  * @property {string} secret  Bearer secret presented by the caller.
+ * @property {'read'|'readwrite'|'admin'} role  read: list and fetch own messages; readwrite (default): also send and retry; admin: also sees and retries every key's messages.
  */
 
 /**

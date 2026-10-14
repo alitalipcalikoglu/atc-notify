@@ -9,6 +9,7 @@ Scenario-driven walkthroughs of every feature. All requests need `Authorization:
 | [Track, list and retry messages](message-status-and-retry.md) | `GET /v1/messages`, cursor paging, `lastError`, manual retry of failed messages |
 | [Templates and their schemas](templates.md) | Listing templates, validation errors, adding a template |
 | [Retries, failures and backoff](delivery-and-retries.md) | What counts as permanent vs. transient, backoff timing, crash recovery |
+| [API keys and roles](keys-and-roles.md) | read, readwrite and admin keys; seeing every sender's messages |
 | [Operations](operations.md) | Health, readiness, metrics, environment, PM2 and Docker |
 | [Audit events](audit-events.md) | Which write actions are forwarded to the audit service, event shape, configuration |
 

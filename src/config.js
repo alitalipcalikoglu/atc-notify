@@ -120,6 +120,6 @@ export class Config {
    * @returns {ApiKey[]}
    */
   static #parseApiKeys(raw) {
-    return parseApiKeys(raw, 'NOTIFY_API_KEYS', { minSecretLength: Config.MIN_SECRET_LENGTH });
+    return /** @type {import('./types.js').ApiKey[]} */ (parseApiKeys(raw, 'NOTIFY_API_KEYS', { roles: ['read', 'readwrite', 'admin'], minSecretLength: Config.MIN_SECRET_LENGTH, roleErrorMessage: () => 'must be read, readwrite or admin' }));
   }
 }

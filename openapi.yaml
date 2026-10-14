@@ -367,10 +367,12 @@ components:
       type: http
       scheme: bearer
       description: >-
-        `Authorization: Bearer <secret>`. Keys come from `NOTIFY_API_KEYS` (`id:secret,id2:secret2`);
+        `Authorization: Bearer <secret>`. Keys come from `NOTIFY_API_KEYS` (`id:secret[:role],…`);
         every configured key is compared in constant time (SHA-256 + timing-safe equality, no early
-        exit), so timing never reveals whether, or which, key matched. notify's keys carry no role —
-        any valid key can use every `/v1/*` route and `/metrics`.
+        exit), so timing never reveals whether, or which, key matched. Roles: `read` (list and fetch
+        the key's own messages; `403 FORBIDDEN` on send and retry), `readwrite` (the default when no
+        role is given: also send and retry) and `admin` (also lists, fetches and retries the messages
+        of every key). Every valid key can read `/metrics`.
 
   parameters:
     MessageId:
@@ -535,6 +537,7 @@ components:
       description: Public view of a queued message. Template `data` is never exposed (it may hold PII).
       required:
         - id
+        - keyId
         - channel
         - status
         - template
@@ -551,6 +554,9 @@ components:
         id:
           type: string
           format: uuid
+        keyId:
+          type: string
+          description: Id of the API key that created the message (the caller's own key unless it has the `admin` role).
         channel:
           type: string
           enum: [email]

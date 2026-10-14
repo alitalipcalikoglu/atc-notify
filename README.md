@@ -64,7 +64,7 @@ All settings come from environment variables and are validated at startup; the p
 
 Required: `NOTIFY_API_KEYS`, `SMTP_URL`, `SMTP_FROM`.
 
-- `NOTIFY_API_KEYS` is `id:secret,id:secret`. Each secret must be at least 32 characters. The id scopes messages: a caller only sees messages it created.
+- `NOTIFY_API_KEYS` is `id:secret[:role],…`. Each secret must be at least 32 characters. The id scopes messages: a caller only sees messages it created, except an `admin` key, which sees every key's. Roles: `readwrite` (default), `read` (cannot send or retry), `admin`. See [examples/keys-and-roles.md](examples/keys-and-roles.md).
 - `SMTP_URL` is a nodemailer connection URL such as `smtps://user:pass@host:465`. `json:` logs mails instead of sending (development).
 - `TLS_CERT_PATH` / `TLS_KEY_PATH` enable native HTTPS; both or neither.
 
@@ -78,7 +78,7 @@ Every `/v1` and `/metrics` request needs `Authorization: Bearer <secret>`. Error
 | GET | `/ready` | Readiness: database and SMTP reachable (cached 30 s). No auth. |
 | GET | `/v1/info` | Service identity: version, API version, real capabilities, schema version, service-core version. No auth. |
 | POST | `/v1/messages` | Enqueue. `202` with the message, or `200` on an idempotent replay. |
-| GET | `/v1/messages` | List own messages, newest first. Query: `status`, `limit` (1-100), `cursor`. |
+| GET | `/v1/messages` | List own messages (every key's for an `admin` key), newest first. Query: `status`, `limit` (1-100), `cursor`. |
 | GET | `/v1/messages/:id` | Delivery status. |
 | POST | `/v1/messages/:id/retry` | Re-queue a `failed` message. `409` for other states. |
 | GET | `/v1/templates` | Email templates with their JSON Schemas. |

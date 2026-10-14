@@ -100,7 +100,7 @@ export class Queue {
         VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)
         ON CONFLICT (api_key_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`),
       byIdempotency: db.prepare(`SELECT ${C} FROM messages WHERE api_key_id = ? AND idempotency_key = ?`),
-      byId: db.prepare(`SELECT ${C} FROM messages WHERE id = ? AND api_key_id = ?`),
+      byId: db.prepare(`SELECT ${C} FROM messages WHERE id = ? AND (? IS NULL OR api_key_id = ?)`),
       claim: db.prepare(`
         UPDATE messages SET status = 'processing', locked_until = ?, owner_token = ?, updated_at = ?
         WHERE id IN (
@@ -129,7 +129,7 @@ export class Queue {
       purge: db.prepare(`DELETE FROM messages WHERE status IN ('sent', 'failed') AND updated_at < ?`),
       retry: db.prepare(`
         UPDATE messages SET status = 'queued', attempts = 0, next_attempt_at = ?, last_error = NULL, updated_at = ?
-        WHERE id = ? AND api_key_id = ? AND status = 'failed'
+        WHERE id = ? AND (? IS NULL OR api_key_id = ?) AND status = 'failed'
         RETURNING ${C}`),
       counts: db.prepare(`SELECT status, COUNT(*) AS n FROM messages GROUP BY status`),
       oldestQueued: db.prepare(`SELECT MIN(next_attempt_at) AS t FROM messages WHERE status = 'queued'`),
@@ -154,7 +154,7 @@ export class Queue {
       id, input.apiKeyId, key, input.channel, payloadJson, this.maxAttempts, now, now, now,
     );
     if (result.changes === 1) {
-      return { row: /** @type {MessageRow} */ (this.stmt.byId.get(id, input.apiKeyId)), created: true };
+      return { row: /** @type {MessageRow} */ (this.stmt.byId.get(id, input.apiKeyId, input.apiKeyId)), created: true };
     }
     const existing = /** @type {MessageRow|undefined} */ (this.stmt.byIdempotency.get(input.apiKeyId, key));
     if (!existing) throw new Error('enqueue: insert ignored but no existing row found');
@@ -307,22 +307,24 @@ export class Queue {
 
   /**
    * @param {string} id
-   * @param {string} apiKeyId
+   * @param {string|null} apiKeyId  Null = any key's message (admin keys).
    * @returns {MessageRow|undefined}
    */
   get(id, apiKeyId) {
-    return /** @type {MessageRow|undefined} */ (this.stmt.byId.get(id, apiKeyId));
+    return /** @type {MessageRow|undefined} */ (this.stmt.byId.get(id, apiKeyId, apiKeyId));
   }
 
   /**
    * Cursor-paginated listing, newest first.
-   * @param {{ apiKeyId: string, status?: MessageStatus, limit: number, cursor?: string }} q
+   * @param {{ apiKeyId: string|null, status?: MessageStatus, limit: number, cursor?: string }} q   `apiKeyId` null lists every key's messages.
    * @returns {{ items: MessageRow[], nextCursor: string|null }}
    */
   list(q) {
-    const where = ['api_key_id = ?'];
+    /** @type {string[]} */
+    const where = [];
     /** @type {(string|number)[]} */
-    const params = [q.apiKeyId];
+    const params = [];
+    if (q.apiKeyId !== null) { where.push('api_key_id = ?'); params.push(q.apiKeyId); }
     if (q.status) {
       where.push('status = ?');
       params.push(q.status);
@@ -334,7 +336,7 @@ export class Queue {
     }
     params.push(q.limit + 1);
     const rows = /** @type {MessageRow[]} */ (this.db.prepare(
-      `SELECT ${Queue.COLUMNS} FROM messages WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ?`,
+      `SELECT ${Queue.COLUMNS} FROM messages ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`,
     ).all(...params));
     const hasMore = rows.length > q.limit;
     const items = hasMore ? rows.slice(0, q.limit) : rows;
@@ -345,12 +347,12 @@ export class Queue {
   /**
    * Re-queue a failed message for a fresh round of attempts.
    * @param {string} id
-   * @param {string} apiKeyId
+   * @param {string|null} apiKeyId  Null = any key's message (admin keys).
    * @param {number} [now]
    * @returns {MessageRow|undefined} Undefined if not found or not in `failed` state.
    */
   retry(id, apiKeyId, now = Date.now()) {
-    return /** @type {MessageRow[]} */ (this.stmt.retry.all(now, now, id, apiKeyId))[0];
+    return /** @type {MessageRow[]} */ (this.stmt.retry.all(now, now, id, apiKeyId, apiKeyId))[0];
   }
 
   /** @returns {Record<MessageStatus, number> & { oldestQueuedAgeMs: number }} */
