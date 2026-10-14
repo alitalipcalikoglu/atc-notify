@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: notify
+  title: atc-notify
   version: 1.1.0
   description: >-
     Notification service for the atc-web platform: accepts email and signed-webhook messages over
@@ -25,7 +25,7 @@ tags:
 paths:
   /openapi.yaml:
     get:
-      operationId: notify.openapi
+      operationId: atc-notify.openapi
       summary: Download the canonical OpenAPI document
       description: Returns this service's repository-root OpenAPI 3.1 document byte-for-byte.
       security: []
@@ -38,7 +38,7 @@ paths:
 
   /health:
     get:
-      operationId: notify.health.get
+      operationId: atc-notify.health.get
       summary: Liveness probe
       description: >-
         Always returns 200 with no dependency check. Does not require authentication and is never
@@ -56,7 +56,7 @@ paths:
 
   /ready:
     get:
-      operationId: notify.ready.get
+      operationId: atc-notify.ready.get
       summary: Readiness probe
       description: >-
         Runs a dependency check (database ping, then `verify()` on every configured delivery
@@ -83,7 +83,7 @@ paths:
 
   /v1/info:
     get:
-      operationId: notify.info.get
+      operationId: atc-notify.info.get
       summary: Service identity and capabilities
       description: >-
         Public, unauthenticated, uncached. `capabilities` is computed live from the channels
@@ -102,7 +102,7 @@ paths:
 
   /metrics:
     get:
-      operationId: notify.metrics.get
+      operationId: atc-notify.metrics.get
       summary: Prometheus metrics
       description: >-
         Prometheus text exposition format. Requires the same Bearer API key as `/v1/*`, but is
@@ -122,7 +122,7 @@ paths:
 
   /v1/messages:
     post:
-      operationId: notify.messages.create
+      operationId: atc-notify.messages.create
       summary: Queue a message for delivery
       description: >-
         Inserts the message and returns immediately (`202` for a newly-created message, `200` when
@@ -218,7 +218,7 @@ paths:
           $ref: '#/components/responses/InternalError'
 
     get:
-      operationId: notify.messages.list
+      operationId: atc-notify.messages.list
       summary: List this API key's messages
       description: >-
         Cursor-paginated, newest first (`created_at DESC, id DESC`). Only returns messages created
@@ -271,7 +271,7 @@ paths:
 
   /v1/messages/{id}:
     get:
-      operationId: notify.messages.get
+      operationId: atc-notify.messages.get
       summary: Get one message
       description: >-
         Scoped to the caller's own API key — a message id belonging to a different key is reported
@@ -308,7 +308,7 @@ paths:
 
   /v1/messages/{id}/retry:
     post:
-      operationId: notify.messages.retry
+      operationId: atc-notify.messages.retry
       summary: Manually re-queue a failed message
       description: >-
         Only a message in `failed` status can be retried. On success, resets `attempts` to 0 and
@@ -352,7 +352,7 @@ paths:
 
   /v1/templates:
     get:
-      operationId: notify.templates.list
+      operationId: atc-notify.templates.list
       summary: List email templates
       description: >-
         The email templates bundled with this service (`TemplateRegistry.withDefaults()`): fixed,
@@ -541,7 +541,7 @@ components:
           description: Current SQLite `PRAGMA user_version` for this instance's database.
         serviceCore:
           type: string
-          description: Version of the `@atc-web/service-core` package this instance is running.
+          description: Version of the `@atc-web/atc-service-core` package this instance is running.
 
     MessageStatus:
       type: string

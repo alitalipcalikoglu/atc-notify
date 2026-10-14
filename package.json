@@ -1,12 +1,12 @@
 {
-  "name": "@atc-web/notify",
+  "name": "@atc-web/atc-notify",
   "version": "1.13.0",
   "private": true,
   "description": "Notification service: queued email and signed webhook delivery over HTTP",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/alitalipcalikoglu/notify.git"
+    "url": "git+https://github.com/alitalipcalikoglu/atc-notify.git"
   },
   "type": "module",
   "main": "src/index.js",
@@ -22,7 +22,7 @@
     "typecheck": "tsc -p jsconfig.json"
   },
   "dependencies": {
-    "@atc-web/service-core": "github:alitalipcalikoglu/service-core#v1.13.0",
+    "@atc-web/atc-service-core": "github:alitalipcalikoglu/atc-service-core#v1.14.0",
     "@fastify/rate-limit": "11.2.0",
     "fastify": "5.12.5",
     "nodemailer": "10.0.10"

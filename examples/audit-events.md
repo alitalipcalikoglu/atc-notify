@@ -15,8 +15,8 @@ One event per completed write request, `outcome: "success"` for 2xx, `outcome: "
 
 | Action | Request |
 |---|---|
-| `notify.message.create` | `POST /v1/messages` |
-| `notify.message.retry` | `POST /v1/messages/:id/retry` |
+| `atc-notify.message.create` | `POST /v1/messages` |
+| `atc-notify.message.retry` | `POST /v1/messages/:id/retry` |
 
 ## Event shape
 
@@ -24,7 +24,7 @@ One event per completed write request, `outcome: "success"` for 2xx, `outcome: "
 {
   "id": "0f1a…",
   "at": "2026-09-17T10:00:00.000Z",
-  "action": "notify.message.create",
+  "action": "atc-notify.message.create",
   "outcome": "success",
   "actor": { "type": "apikey", "id": "console" },
   "target": { "type": "…", "id": "…" },

@@ -286,7 +286,7 @@ is available), `upstream` / `upstreamMs` (`notify` doesn't proxy), `service`, `v
 (present in the HTTP error body but not echoed into the log line itself).
 
 ## Tracing
-`notify` parses an inbound `traceparent` via `@atc-web/service-core`'s `registerRequestContext`,
+`notify` parses an inbound `traceparent` via `@atc-web/atc-service-core`'s `registerRequestContext`,
 trust-gated on `TRUST_PROXY` (same boundary as `X-Forwarded-*`, per OBSERVABILITY.md): trusted, the
 caller's trace-id is continued with a fresh span-id for this hop; untrusted or malformed, a fresh
 trace is started. Both `traceId`/`spanId` are logged on every request line (post-production Phase
@@ -406,7 +406,7 @@ is now reclaimed by any live sibling, not only by that same process restarting �
 Stage 6 makes. Both/all instances compete for the same claim batches under real SQLite write-lock
 serialization (not corruption, just contention under very high claim rates). A simultaneous first
 boot of two or more instances against a brand-new (or pending-migration) database file is
-migration-safe as of `@atc-web/service-core` v1.10.1 (post-production Phase 1) — no staggered-start
+migration-safe as of `@atc-web/atc-service-core` v1.10.1 (post-production Phase 1) — no staggered-start
 workaround is needed; see `stack/docs/UPGRADE.md`'s "Worker-split rollout ordering" for the exact
 guarantee and its boundary (same host, local SQLite file only).
 

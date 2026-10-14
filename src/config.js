@@ -1,4 +1,4 @@
-import { ConfigError, EnvReader, parseApiKeys, parseAudit } from '@atc-web/service-core/config';
+import { ConfigError, EnvReader, parseApiKeys, parseAudit } from '@atc-web/atc-service-core/config';
 
 /** @typedef {import('./types.js').ApiKey} ApiKey */
 

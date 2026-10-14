@@ -157,7 +157,7 @@ test('GET /v1/info reports service identity and real, currently-enabled capabili
   const res = await app.inject({ url: '/v1/info', headers: auth });
   assert.equal(res.statusCode, 200);
   const body = res.json();
-  assert.equal(body.service, 'notify');
+  assert.equal(body.service, 'atc-notify');
   assert.equal(body.version, '1.0.0');
   assert.equal(body.apiVersion, 'v1');
   assert.deepEqual(body.capabilities, ['email', 'templates', 'idempotency'], 'only the channel actually wired into this app instance');

@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import rateLimit from '@fastify/rate-limit';
 import Fastify from 'fastify';
-import { AuditClient } from '@atc-web/service-core/audit';
-import { registerInfo, registerOpenApi, registerProbes, registerRequestContext, requestOptions } from '@atc-web/service-core/fastify';
+import { AuditClient } from '@atc-web/atc-service-core/audit';
+import { registerInfo, registerOpenApi, registerProbes, registerRequestContext, requestOptions } from '@atc-web/atc-service-core/fastify';
 import { ApiKeyAuth } from './auth.js';
 import { DisabledChannel } from './channels/disabled.js';
 import { IdempotencyConflictError, InvalidCursorError } from './queue.js';
@@ -155,7 +155,7 @@ export class NotifyApi {
    * @param {AnyChannel[]} deps.channels   Probed by `/ready`.
    * @param {string} deps.version
    * @param {import('./types.js').Logger} [deps.logger]
-   * @param {import('@atc-web/service-core/audit').AuditClient} [deps.audit]
+   * @param {import('@atc-web/atc-service-core/audit').AuditClient} [deps.audit]
    */
   constructor({ config, audit, queue, presence, templates, channels, version, logger }) {
     this.config = config;
@@ -200,7 +200,7 @@ export class NotifyApi {
     }, { cacheMs: NotifyApi.READY_CACHE_MS, extra: () => ({ worker: this.workerStatus() }) });
     registerOpenApi(app, new URL('../openapi.yaml', import.meta.url));
     registerInfo(app, {
-      service: 'notify',
+      service: 'atc-notify',
       version: this.version,
       // Real, currently-enabled channels only — a DisabledChannel stand-in (Stage 7,
       // NOTIFY_WEBHOOK_CHANNEL=false) is not a supported capability, so it's excluded here even
@@ -253,7 +253,7 @@ export class NotifyApi {
     });
     api.addHook('onReady', async () => this.#compileDataValidators(api));
 
-    api.post('/messages', { config: { audit: AuditClient.route('notify.message.create', (_r, b) => ({ type: 'message', id: b.id }), (_r, b) => ({ channel: b?.channel, status: b?.status })) },
+    api.post('/messages', { config: { audit: AuditClient.route('atc-notify.message.create', (_r, b) => ({ type: 'message', id: b.id }), (_r, b) => ({ channel: b?.channel, status: b?.status })) },
       schema: {
         body: {
           type: 'object',
@@ -267,7 +267,7 @@ export class NotifyApi {
 
     api.get('/messages', { schema: { querystring: Schemas.listQuery } }, this.#listMessages);
     api.get('/messages/:id', { schema: { params: Schemas.idParams, response: { 200: Schemas.message, 404: Schemas.error } } }, this.#getMessage);
-    api.post('/messages/:id/retry', { config: { audit: AuditClient.route('notify.message.retry', (r) => ({ type: 'message', id: /** @type {any} */ (r.params).id })) },
+    api.post('/messages/:id/retry', { config: { audit: AuditClient.route('atc-notify.message.retry', (r) => ({ type: 'message', id: /** @type {any} */ (r.params).id })) },
       schema: { params: Schemas.idParams, response: { 200: Schemas.message, 404: Schemas.error, 409: Schemas.error } },
     }, this.#retryMessage);
     api.get('/templates', async () => ({ items: this.templates.describe() }));

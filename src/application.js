@@ -1,8 +1,8 @@
 import { NotifyApi } from './app.js';
-import { AuditClient } from '@atc-web/service-core/audit';
-import { readServiceVersion } from '@atc-web/service-core/fastify';
-import { Lifecycle } from '@atc-web/service-core/lifecycle';
-import { ConsoleLogger } from '@atc-web/service-core/log';
+import { AuditClient } from '@atc-web/atc-service-core/audit';
+import { readServiceVersion } from '@atc-web/atc-service-core/fastify';
+import { Lifecycle } from '@atc-web/atc-service-core/lifecycle';
+import { ConsoleLogger } from '@atc-web/atc-service-core/log';
 import { DisabledChannel } from './channels/disabled.js';
 import { EmailChannel } from './channels/email.js';
 import { WebhookChannel, WebhookSigner } from './channels/webhook.js';
