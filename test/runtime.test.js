@@ -21,7 +21,7 @@ test('Runtime: api-only role builds no Worker; the process never claims a messag
   try {
     assert.equal(app.worker, null);
     assert.ok(app.app, 'HTTP listener is built');
-    const { row } = app.queue.enqueue({ apiKeyId: 'test', channel: 'webhook', payload: { channel: 'webhook', url: 'https://api.example/x', event: 'e', data: {} } });
+    const { row } = app.queue.enqueue({ apiKeyId: 'test', channel: 'email', payload: { channel: 'email', template: 'generic', to: ['a@example.com'], data: {} } });
     await new Promise((r) => setTimeout(r, 150));
     assert.equal(app.queue.get(row.id, 'test')?.status, 'queued', 'nothing in this process ever claims it');
   } finally {
@@ -61,7 +61,7 @@ test('Runtime: shutdown order — stop claiming, then HTTP intake, then drain in
   wrap(app.db, 'close', 'db.close');
   for (const ch of app.channels) wrap(ch, 'close', 'channel.close');
 
-  app.queue.enqueue({ apiKeyId: 'test', channel: 'webhook', payload: { channel: 'webhook', url: 'https://api.example/x', event: 'e', data: {} } });
+  app.queue.enqueue({ apiKeyId: 'test', channel: 'email', payload: { channel: 'email', template: 'generic', to: ['a@example.com'], data: {} } });
   await new Promise((r) => setTimeout(r, 20)); // let the worker claim it before shutdown begins
 
   const realExit = process.exit;
@@ -72,6 +72,6 @@ test('Runtime: shutdown order — stop claiming, then HTTP intake, then drain in
   } finally {
     process.exit = realExit;
   }
-  assert.deepEqual(order, ['stopClaiming', 'app.close', 'worker.stop', 'channel.close', 'channel.close', 'audit.close', 'db.close']);
+  assert.deepEqual(order, ['stopClaiming', 'app.close', 'worker.stop', 'channel.close', 'audit.close', 'db.close']);
   assert.equal(exitCode, 0, 'a clean shutdown, not the force-exit/error path');
 });

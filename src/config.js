@@ -34,10 +34,6 @@ export class Config {
     this.apiKeys = values.apiKeys;
     this.smtpUrl = values.smtpUrl;
     this.smtpFrom = values.smtpFrom;
-    this.webhookSigningSecret = values.webhookSigningSecret;
-    this.webhookAllowedHosts = values.webhookAllowedHosts;
-    this.webhookAllowHttp = values.webhookAllowHttp;
-    this.webhookTimeoutMs = values.webhookTimeoutMs;
     this.maxAttempts = values.maxAttempts;
     this.backoffBaseMs = values.backoffBaseMs;
     this.backoffCapMs = values.backoffCapMs;
@@ -47,7 +43,6 @@ export class Config {
     this.heartbeatMs = values.heartbeatMs;
     this.retentionDays = values.retentionDays;
     this.rateLimitMax = values.rateLimitMax;
-    this.webhookChannelEnabled = values.webhookChannelEnabled;
     Object.freeze(this);
   }
 
@@ -55,7 +50,7 @@ export class Config {
    * Shutdown timers derived from the real worst-case external call duration (not `lockTtlMs` — see
    * the Stage 6.1 fix in `application.js` for why the lease TTL is the wrong basis once a heartbeat
    * decouples call duration from lease renewal). Callers pass the same `callCeilingMs`
-   * (`Math.max(EmailChannel.SMTP_WORST_CASE_MS, this.webhookTimeoutMs)`) they use to size the
+   * (`EmailChannel.SMTP_WORST_CASE_MS`) they use to size the
    * worker's own drain wait.
    * @param {number} callCeilingMs
    */
@@ -78,11 +73,6 @@ export class Config {
     const smtpFrom = r.required('SMTP_FROM');
     if (/[\r\n]/.test(smtpFrom)) throw new ConfigError('SMTP_FROM must be a single line');
 
-    const webhookSigningSecret = r.required('WEBHOOK_SIGNING_SECRET');
-    if (webhookSigningSecret.length < Config.MIN_SECRET_LENGTH) {
-      throw new ConfigError(`WEBHOOK_SIGNING_SECRET must be at least ${Config.MIN_SECRET_LENGTH} characters`);
-    }
-
     const certPath = r.optional('TLS_CERT_PATH');
     const keyPath = r.optional('TLS_KEY_PATH');
     if (Boolean(certPath) !== Boolean(keyPath)) throw new ConfigError('TLS_CERT_PATH and TLS_KEY_PATH must be set together');
@@ -94,9 +84,8 @@ export class Config {
     const lockTtlMs = r.integer('LOCK_TTL_MS', 120_000, { min: 5_000, max: 600_000 });
     // Stage 6: lease ownership. heartbeatMs must stay well under lockTtlMs — a single missed
     // heartbeat (event loop stall, DB busy) must not itself be enough to lose the lock. The
-    // heartbeat is what actually protects a long SMTP/webhook send now (it renews the lock every
-    // heartbeatMs regardless of how long the call takes), which is why WEBHOOK_TIMEOUT_MS below no
-    // longer needs to be capped relative to lockTtlMs — see README's "Clock model".
+    // heartbeat is what actually protects a long SMTP send (it renews the lock every heartbeatMs
+    // regardless of how long the call takes) — see README's "Clock model".
     const heartbeatMs = r.integer('HEARTBEAT_MS', 10_000, { min: 250 });
     if (heartbeatMs >= lockTtlMs) throw new ConfigError('HEARTBEAT_MS must be less than LOCK_TTL_MS');
 
@@ -113,10 +102,6 @@ export class Config {
       apiKeys: Config.#parseApiKeys(r.required('NOTIFY_API_KEYS')),
       smtpUrl,
       smtpFrom,
-      webhookSigningSecret,
-      webhookAllowedHosts: r.list('WEBHOOK_ALLOWED_HOSTS').map((h) => h.toLowerCase()),
-      webhookAllowHttp: r.boolean('WEBHOOK_ALLOW_HTTP', false),
-      webhookTimeoutMs: r.integer('WEBHOOK_TIMEOUT_MS', 10_000, { min: 1_000, max: 120_000 }),
       maxAttempts: r.integer('MAX_ATTEMPTS', 8, { min: 1, max: 50 }),
       backoffBaseMs,
       backoffCapMs,
@@ -126,9 +111,6 @@ export class Config {
       heartbeatMs,
       retentionDays: r.integer('RETENTION_DAYS', 30, { min: 1 }),
       rateLimitMax: r.integer('RATE_LIMIT_MAX', 600, { min: 1 }),
-      // Stage 7: the webhook channel is legacy (README "Boundaries") — this lets an operator turn
-      // it off without touching email. Default true keeps every existing deployment unchanged.
-      webhookChannelEnabled: r.boolean('NOTIFY_WEBHOOK_CHANNEL', true),
     });
   }
 

@@ -15,8 +15,8 @@ Fields that change over time:
 | `status` | `queued` → `processing` → `sent` or `failed` |
 | `attempts` | Failed attempts so far |
 | `nextAttemptAt` | When the worker will try again (only while `queued`) |
-| `lastError` | Last failure message, e.g. `webhook responded 503: try later` |
-| `providerId` | SMTP Message-ID or `http 200` for webhooks |
+| `lastError` | Last failure message, e.g. `421 4.7.0 try again later` |
+| `providerId` | SMTP Message-ID returned by the server, e.g. `<1a2b3c@example.com>` |
 | `sentAt` | Delivery time |
 
 ## List
@@ -28,7 +28,7 @@ curl -s "$NOTIFY/v1/messages?status=failed&limit=50" -H "Authorization: Bearer $
 ```
 
 ```json
-{ "items": [ { "id": "…", "status": "failed", "lastError": "webhook responded 400: bad payload", "...": "…" } ],
+{ "items": [ { "id": "…", "status": "failed", "lastError": "550 5.1.1 no such user", "...": "…" } ],
   "nextCursor": "MTc1ODAwMDAwMDAwMDo…" }
 ```
 

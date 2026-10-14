@@ -7,7 +7,7 @@ const backoffMs = (attempt, base, cap, random) => new Backoff(base, cap, random)
 import { testConfig, testQueue } from './helpers.js';
 
 const config = testConfig();
-const payload = { channel: 'webhook', url: 'https://x.example', event: 'e', data: {} };
+const payload = { channel: 'email', template: 'generic', to: ['a@example.com'], data: {} };
 
 test('backoffMs grows exponentially with equal jitter and respects the cap', () => {
   assert.equal(backoffMs(1, 100, 10_000, () => 0), 50);
@@ -18,7 +18,7 @@ test('backoffMs grows exponentially with equal jitter and respects the cap', () 
 
 test('enqueue + claim + markSent lifecycle', () => {
   const q = testQueue(config);
-  const { row, created } = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 1000);
+  const { row, created } = q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 1000);
   assert.equal(created, true);
   assert.equal(row.status, 'queued');
   assert.equal(row.max_attempts, 3);
@@ -41,32 +41,32 @@ test('enqueue + claim + markSent lifecycle', () => {
 
 test('idempotency key returns the existing row per api key', () => {
   const q = testQueue(config);
-  const first = q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'webhook', payload });
-  const replay = q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'webhook', payload });
-  const otherKey = q.enqueue({ apiKeyId: 'b', idempotencyKey: 'k1', channel: 'webhook', payload });
+  const first = q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'email', payload });
+  const replay = q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'email', payload });
+  const otherKey = q.enqueue({ apiKeyId: 'b', idempotencyKey: 'k1', channel: 'email', payload });
   assert.equal(replay.created, false);
   assert.equal(replay.row.id, first.row.id);
   assert.equal(otherKey.created, true);
   assert.notEqual(otherKey.row.id, first.row.id);
-  const noKey1 = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload });
-  const noKey2 = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload });
+  const noKey1 = q.enqueue({ apiKeyId: 'a', channel: 'email', payload });
+  const noKey2 = q.enqueue({ apiKeyId: 'a', channel: 'email', payload });
   assert.notEqual(noKey1.row.id, noKey2.row.id);
 });
 
 test('enqueue: reusing an idempotency key with a different channel or payload is a conflict, not a silent success', () => {
   const q = testQueue(config);
-  q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'webhook', payload }, 0);
-  assert.throws(() => q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'webhook', payload: { ...payload, url: 'https://other.example' } }, 0), IdempotencyConflictError);
+  q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'email', payload }, 0);
+  assert.throws(() => q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'email', payload: { ...payload, to: ['b@example.com'] } }, 0), IdempotencyConflictError);
   assert.throws(() => q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'email', payload: { channel: 'email', template: 'generic', to: ['x@example.com'], data: {} } }, 0), IdempotencyConflictError);
   // The exact same channel + payload replays cleanly (already covered above); a byte-identical
   // re-send of an otherwise-equal object also replays cleanly.
-  const replay = q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'webhook', payload: { ...payload } }, 0);
+  const replay = q.enqueue({ apiKeyId: 'a', idempotencyKey: 'k1', channel: 'email', payload: { ...payload } }, 0);
   assert.equal(replay.created, false);
 });
 
 test('markFailure re-queues with backoff, fails after max attempts or when final', () => {
   const q = testQueue(config);
-  const { row } = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  const { row } = q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   let [c] = q.claim(1, 0);
   let u = q.markFailure(c, /** @type {string} */ (c.owner_token), 'boom', { now: 0 });
   assert.equal(u?.status, 'queued');
@@ -85,7 +85,7 @@ test('markFailure re-queues with backoff, fails after max attempts or when final
   assert.equal(u?.status, 'failed', 'third failure exhausts max_attempts=3');
   assert.equal(q.claim(1, 999_999).length, 0);
 
-  const { row: r2 } = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  const { row: r2 } = q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   [c] = q.claim(1, 0);
   u = q.markFailure(c, /** @type {string} */ (c.owner_token), 'permanent', { final: true, now: 0 });
   assert.equal(u?.status, 'failed');
@@ -103,7 +103,7 @@ test('reclaimExpired: crossing the delivery-attempt-start boundary decides free 
 
   // Crash before ever reaching the delivery-attempt boundary: infra-only crash, free retry, no
   // attempt cost.
-  const { row: neverStarted } = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  const { row: neverStarted } = q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   const [claimedA] = q.claim(1, 0);
   assert.equal(claimedA.call_started_at, null);
   assert.deepEqual(q.reclaimExpired(config.lockTtlMs), [], 'exact boundary: lock_until == now is NOT yet expired');
@@ -118,9 +118,9 @@ test('reclaimExpired: crossing the delivery-attempt-start boundary decides free 
   assert.equal(q.markSent(neverStarted.id, /** @type {string} */ (claimedA.owner_token), 'late', config.lockTtlMs + 2), false);
 
   // Crash after crossing the boundary (call_started_at landed, external outcome unknown — this
-  // does NOT prove the SMTP/webhook call itself ever ran): a real attempt, costs the budget,
+  // does NOT prove the SMTP call itself ever ran): a real attempt, costs the budget,
   // follows the normal backoff schedule — same as any other failure. Conservative by design.
-  const { row: started } = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 100_000);
+  const { row: started } = q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 100_000);
   const [claimedB] = q.claim(1, 100_000);
   assert.equal(q.markCallStarted(claimedB.id, /** @type {string} */ (claimedB.owner_token), 100_000), true);
   assert.deepEqual(q.reclaimExpired(100_000 + config.lockTtlMs), [], 'exact boundary: still not expired');
@@ -141,14 +141,14 @@ test('reclaimExpired: crossing the delivery-attempt-start boundary decides free 
 
 test('reclaimExpired: markCallStarted lands, then a simulated crash before channel.deliver() is ever invoked — still an attempt, not a free release (Stage 6.2)', () => {
   const q = testQueue(config);
-  const { row } = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  const { row } = q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   const [claimed] = q.claim(1, 0);
   const ownerToken = /** @type {string} */ (claimed.owner_token);
 
   // The delivery-attempt boundary is crossed...
   assert.equal(q.markCallStarted(claimed.id, ownerToken, 0), true);
   // ...then the process dies right here, in the gap before Worker#deliver ever calls
-  // channel.deliver(). No SMTP/webhook call was ever made — but the system cannot tell that from
+  // channel.deliver(). No SMTP call was ever made — but the system cannot tell that from
   // "made the call and it's still pending", so it treats this as an unknown-outcome attempt.
   assert.equal(q.reclaimExpired(config.lockTtlMs).length, 0, 'lease not yet expired: nothing to reclaim yet');
 
@@ -164,8 +164,8 @@ test('reclaimExpired: markCallStarted lands, then a simulated crash before chann
 test('list paginates newest first with an opaque cursor and filters by status', () => {
   const q = testQueue(config);
   const ids = [];
-  for (let i = 0; i < 5; i++) ids.push(q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 1000 + i).row.id);
-  q.enqueue({ apiKeyId: 'b', channel: 'webhook', payload }, 2000);
+  for (let i = 0; i < 5; i++) ids.push(q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 1000 + i).row.id);
+  q.enqueue({ apiKeyId: 'b', channel: 'email', payload }, 2000);
   const [c] = q.claim(1, 5000);
   q.markSent(c.id, /** @type {string} */ (c.owner_token), null, 5000);
 

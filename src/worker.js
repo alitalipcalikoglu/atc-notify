@@ -70,7 +70,7 @@ export class Worker {
   /**
    * Stop claiming (if not already) and wait for in-flight sends to finish, bounded by
    * `options.drainMs` (Stage 6.1) — under ordinary operation every in-flight send already has its
-   * own real timeout (SMTP's hardcoded socket timeouts, `WEBHOOK_TIMEOUT_MS`), so the drain
+   * own real timeout (SMTP's hardcoded socket timeouts), so the drain
    * finishes well within `drainMs`. If it doesn't (a call somehow bypassed its own timeout), this
    * stops waiting and logs loudly rather than hanging the whole shutdown sequence forever — the
    * abandoned send(s) may still complete in the background and their eventual `markSent`/

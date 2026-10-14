@@ -65,14 +65,8 @@ test('POST /v1/messages validates the envelope per channel', async () => {
   res = await post({ ...emailBody, extra: 1 });
   assert.equal(res.statusCode, 400, 'unknown fields rejected');
 
-  res = await post({ channel: 'webhook', url: 'https://h.example/x', event: 'bad event!', data: {} });
-  assert.equal(res.statusCode, 400);
-
-  res = await post({ channel: 'webhook', url: 'https://h.example/x', event: 'ok', data: {}, headers: { Host: 'evil' } });
-  assert.equal(res.statusCode, 400, 'only X-* and Authorization headers allowed');
-
-  res = await post({ channel: 'webhook', url: 'https://h.example/x', event: 'ok', data: {}, headers: { 'X-Token': 'a\r\nb' } });
-  assert.equal(res.statusCode, 400, 'no CRLF in header values');
+  res = await post({ channel: 'webhook', url: 'https://h.example/x', event: 'ok', data: {} });
+  assert.equal(res.statusCode, 400, 'email is the only channel');
 });
 
 test('POST /v1/messages validates template data and reports the path', async () => {
@@ -167,29 +161,6 @@ test('GET /v1/info reports service identity and real, currently-enabled capabili
 
 test('/v1/info is public, no auth required (same as /health and /ready)', async () => {
   assert.equal((await app.inject('/v1/info')).statusCode, 200);
-});
-
-test('POST /v1/messages: NOTIFY_WEBHOOK_CHANNEL=false rejects a new webhook message deterministically, email is unaffected (Stage 7)', async () => {
-  const disabledConfig = testConfig({ NOTIFY_WEBHOOK_CHANNEL: 'false' });
-  const { channel } = testEmailChannel(disabledConfig);
-  const disabledApp = await new NotifyApi({
-    config: disabledConfig, queue: testQueue(disabledConfig), presence: testPresence(),
-    templates, channels: [channel], version: '1.0.0', logger: silentLog,
-  }).build();
-  try {
-    await disabledApp.ready();
-    const webhook = await disabledApp.inject({
-      method: 'POST', url: '/v1/messages', headers: auth,
-      payload: { channel: 'webhook', url: 'https://h.example/x', event: 'ok', data: {} },
-    });
-    assert.equal(webhook.statusCode, 403);
-    assert.equal(webhook.json().error.code, 'WEBHOOK_CHANNEL_DISABLED');
-
-    const email = await disabledApp.inject({ method: 'POST', url: '/v1/messages', headers: auth, payload: emailBody });
-    assert.equal(email.statusCode, 202, 'email channel unaffected by the webhook switch');
-  } finally {
-    await disabledApp.close();
-  }
 });
 
 test('rate limit is enforced per API key', async () => {

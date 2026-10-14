@@ -30,7 +30,7 @@ test('Concurrency: several real connections racing for the same due messages nev
     const queue = new Queue(db, { maxAttempts: 3, lockTtlMs: 30_000, backoff: new Backoff(100, 1000) });
     const now = Date.now();
     const N = 12;
-    for (let i = 0; i < N; i++) queue.enqueue({ apiKeyId: 'a', channel: 'webhook', payload: { channel: 'webhook', url: 'https://api.example/x', event: 'e', data: {} } }, now);
+    for (let i = 0; i < N; i++) queue.enqueue({ apiKeyId: 'a', channel: 'email', payload: { channel: 'email', template: 'generic', to: ['a@example.com'], data: {} } }, now);
     db.close();
 
     const THREADS = 6;

@@ -1,6 +1,6 @@
 # atc-notify
 
-Queued, retried notification delivery over HTTP. Other services enqueue a message; `atc-notify` renders it, delivers it (email over SMTP, or a signed webhook) and keeps a delivery record.
+Queued, retried notification delivery over HTTP. Other services enqueue a message; `atc-notify` renders it, delivers it as email over SMTP and keeps a delivery record.
 
 Runtime dependencies: `fastify`, `@fastify/rate-limit`, `nodemailer`. Storage is SQLite via `node:sqlite` (built into Node 22.13+, no native build). The folder is self-contained: copy it to any host with Node 22 and run.
 
@@ -21,7 +21,7 @@ pm2 save && pm2 startup        # survive reboots
 pm2 reload notify              # restart after a deploy: waits for the app's ready signal
 ```
 
-`kill_timeout` is 150 s so in-flight deliveries finish before PM2 escalates to SIGKILL. Keep `instances: 1`: the delivery worker runs in-process and one SQLite file expects one writer.
+`kill_timeout` is 80 s so in-flight deliveries finish before PM2 escalates to SIGKILL. Keep `instances: 1`: the delivery worker runs in-process and one SQLite file expects one writer.
 
 Production with Docker:
 
@@ -39,11 +39,11 @@ npm run typecheck
 
 ## Boundaries
 
-**Purpose:** fire-and-forget delivery of transactional notifications — templated email, and a legacy one-off signed webhook — on behalf of other services.
+**Purpose:** fire-and-forget delivery of transactional notifications — templated email — on behalf of other services.
 
-**Responsibilities:** template rendering; SMTP delivery with retry/backoff; a legacy signed-webhook channel for one-off calls (`NOTIFY_WEBHOOK_CHANNEL`, see below); idempotency-key dedup; per-message delivery status.
+**Responsibilities:** template rendering; SMTP delivery with retry/backoff; idempotency-key dedup; per-message delivery status.
 
-**Non-responsibilities:** notify ≠ durable webhook platform. Its webhook channel is explicitly a legacy path for simple one-off calls — it has no subscription model, no secret rotation, no replay, no delivery history browsing beyond a single message's own status. New durable/retry-oriented webhook integrations belong in `atc-webhook-out`, not here. Notify also does not manage recipient subscriptions or preferences — every send is caller-supplied, per message.
+**Non-responsibilities:** notify does not deliver webhooks; outbound webhooks are the job of the `atc-webhook-out` service. Notify also does not manage recipient subscriptions or preferences — every send is caller-supplied, per message.
 
 ## Running on its own server
 
@@ -62,13 +62,11 @@ Scenario walkthroughs for every feature live in [examples/](examples/README.md).
 
 All settings come from environment variables and are validated at startup; the process exits with a clear message on a bad value. See [.env.example](.env.example) for the full list and defaults.
 
-Required: `NOTIFY_API_KEYS`, `SMTP_URL`, `SMTP_FROM`, `WEBHOOK_SIGNING_SECRET`.
+Required: `NOTIFY_API_KEYS`, `SMTP_URL`, `SMTP_FROM`.
 
 - `NOTIFY_API_KEYS` is `id:secret,id:secret`. Each secret must be at least 32 characters. The id scopes messages: a caller only sees messages it created.
 - `SMTP_URL` is a nodemailer connection URL such as `smtps://user:pass@host:465`. `json:` logs mails instead of sending (development).
 - `TLS_CERT_PATH` / `TLS_KEY_PATH` enable native HTTPS; both or neither.
-- `WEBHOOK_ALLOWED_HOSTS` restricts webhook targets to the listed hosts and their subdomains. Leave empty to allow any public host.
-- `NOTIFY_WEBHOOK_CHANNEL` (default `true`) — turns the legacy signed-webhook channel off when set to `false`. Existing deployments are unaffected by default. When `false`: `POST /v1/messages` with `channel: "webhook"` is rejected with `403 WEBHOOK_CHANNEL_DISABLED` before it's queued; email is unaffected. Anything already `queued`/`processing` under the webhook channel at the moment it's disabled is still claimed by the worker on its normal schedule, but settles to a deterministic terminal `failed` (one attempt cost, no backoff, `last_error` names the reason) instead of attempting delivery or sitting stuck forever — never a silent drop, never an infinite retry loop. New durable/retry-oriented webhook integrations should use `atc-webhook-out` instead of turning this back on.
 
 ## API
 
@@ -103,29 +101,13 @@ Every `/v1` and `/metrics` request needs `Authorization: Bearer <secret>`. Error
 
 Adding a template: subclass `EmailTemplate` in `src/templates/<name>.js` (override `name`, `description`, `schema`, `subject()`, `layout()`) and add an instance in `TemplateRegistry.withDefaults()`. `layout()` returns plain strings; `Layout` escapes every value on output.
 
-### Webhook
-
-**Legacy signed webhook for one-off calls.** This is a simple, one-shot signed POST, not a durable delivery platform — no subscriptions, no secret rotation, no replay, no per-endpoint delivery history. For anything durable/retry-oriented (recurring event delivery to external partners, subscription management, replay), use `atc-webhook-out` instead. Can be turned off entirely with `NOTIFY_WEBHOOK_CHANNEL=false` (see Configuration) without affecting email.
-
-```json
-{
-  "channel": "webhook",
-  "url": "https://api.partner.example/hooks/orders",
-  "event": "order.paid",
-  "data": { "orderId": 42 },
-  "headers": { "X-Tenant": "t1" }
-}
-```
-
-The receiver gets `POST` with body `{ "id", "event", "timestamp", "data" }` and headers `X-Notify-Id`, `X-Notify-Event`, `X-Notify-Signature: t=<unix seconds>,v1=<hex>`. Verify with `HMAC-SHA256(secret, "<t>.<raw body>")` and reject timestamps older than a few minutes; `verifySignature()` in `src/channels/webhook.js` is a reference implementation. Custom headers are limited to `X-*` and `Authorization`. Redirects are not followed.
-
 ### Message lifecycle
 
 `queued` → `processing` → `sent` | `failed`.
 
 - A rolling pool keeps up to `WORKER_CONCURRENCY` messages in flight at any time — a slot freed by one finishing send is refilled immediately, not held idle until a whole claimed batch finishes (Stage 6 fix: was previously `Promise.all` over a fixed batch, so one slow send idled the rest of the pool).
 - Failures retry with exponential backoff and jitter (`BACKOFF_BASE_MS` doubling up to `BACKOFF_CAP_MS`) until `MAX_ATTEMPTS`.
-- Permanent failures stop immediately: SMTP 5xx replies, webhook 3xx/4xx other than 408/425/429, and any blocked target.
+- Permanent failures stop immediately: SMTP 5xx replies other than 552.
 - A message claimed longer than `LOCK_TTL_MS` without a heartbeat (crash, or an event-loop stall long enough to miss every renewal) is reclaimed as a failed attempt — costs an attempt and follows the normal backoff/exhaustion schedule, same as any other failure (Stage 6: previously a free reset with no attempt cost). A heartbeat renews the lock every `HEARTBEAT_MS` while a send is genuinely still in flight, so an ordinary slow send never loses its lock on its own.
 - `sent` and `failed` rows are deleted after `RETENTION_DAYS`.
 - `idempotencyKey` is unique per API key; a repeat with the SAME channel and payload returns the original message instead of sending twice. A repeat with a DIFFERENT channel or payload is a `409 IDEMPOTENCY_CONFLICT` (Stage 6: previously silently returned the stale original as if it had succeeded) — the key identifies one logical send, not a slot to overwrite.
@@ -143,18 +125,15 @@ Class-based; dependencies are injected through constructors, `src/application.js
 | `NotifyApi`, `MessageView` | `src/app.js` | Fastify routes, schemas, error mapping |
 | `ApiKeyAuth` | `src/auth.js` | Bearer key hook |
 | `Worker` | `src/worker.js` | Delivery loop and maintenance |
-| `Channel` → `EmailChannel`, `WebhookChannel` | `src/channels/` | Outbound delivery per channel, retry classification |
-| `WebhookSigner` | `src/channels/webhook.js` | HMAC signing and verification |
-| `NetGuard` | `src/net-guard.js` | SSRF guard with pinned resolution |
+| `Channel` → `EmailChannel` | `src/channels/` | Outbound SMTP delivery, retry classification |
 | `EmailTemplate` → concrete templates, `Layout`, `TemplateRegistry` | `src/templates/` | Escaped rendering, schema per template |
 | `Html` | `src/html.js` | Static escaping helpers |
 
 ## Security notes
 
-- **At-least-once delivery, not exactly-once — for both channels, with different guarantees per channel.** For the webhook channel: if the receiver returns `2xx` but this process dies before the message's local `sent` state commits, the same message is retried and the receiver gets the same request again. `X-Notify-Id` is the message's own id and stays identical across every retry of that message; a receiver can use it as an idempotency/deduplication key. (`idempotencyKey`, above, is a separate, caller-facing concept — it dedupes repeat `POST /v1/messages` calls from the API caller before a message is ever queued; it is never sent to the webhook receiver and is not itself a retry-dedup mechanism.) For the SMTP/email channel: the identical crash window exists (SMTP acceptance happens, then the process can die before the local `sent` state commits, causing a resend), but SMTP gives no server-side dedup mechanism to attach to — a duplicate email reaching the same inbox twice is a real possibility this service cannot prevent on its own. `X-Notify-Id` is included in the mail headers for a downstream mail-processing pipeline that chooses to read it, but nothing in the SMTP protocol itself dedupes on it; do not present this as solved.
-- API secrets are compared in constant time; every configured key is checked so timing does not reveal which one matched. `WebhookSigner.verify()` (the reference signature-verification helper receivers can use) compares the HMAC digest with `timingSafeEqual`, not a short-circuiting `Buffer.equals` (Stage 6 fix).
+- **At-least-once delivery, not exactly-once.** If the SMTP server accepts a message but this process dies before the message's local `sent` state commits, the message is retried and the same email can reach the same inbox twice. SMTP gives no server-side dedup mechanism to attach to, so this service cannot prevent it on its own. `X-Notify-Id` (the message's own id, identical across every retry) is included in the mail headers for a downstream mail-processing pipeline that chooses to read it, but nothing in the SMTP protocol itself dedupes on it. (`idempotencyKey`, above, is a separate, caller-facing concept: it dedupes repeat `POST /v1/messages` calls before a message is ever queued.)
+- API secrets are compared in constant time; every configured key is checked so timing does not reveal which one matched.
 - Rate limit per API key (`RATE_LIMIT_MAX` per minute).
-- Webhook targets are resolved before connecting and rejected when any address is loopback, private, link-local, multicast, or another special range (IPv4 and IPv6 including mapped, NAT64, 6to4 and Teredo forms). The vetted address is pinned for the connection so DNS rebinding cannot redirect it. `https` only unless `WEBHOOK_ALLOW_HTTP=true`. URLs with credentials are rejected.
 - Template data is escaped on output; button URLs must be `http(s)`; subjects are collapsed to one line to prevent header injection.
 - Request bodies are capped at `BODY_LIMIT` bytes; unknown fields are rejected.
 - Template `data` is never returned by the API (it may contain personal data). Logs redact `Authorization`.
@@ -210,8 +189,8 @@ also parses an inbound `traceparent` via `@atc-web/atc-service-core`'s `register
 trust-gated on `TRUST_PROXY` (same boundary as `X-Forwarded-*`): trusted, the caller's trace-id is
 continued with a fresh span-id; untrusted or malformed, a fresh trace is started. Both
 `traceId`/`spanId` are logged on every request line — see the platform's
-[OBSERVABILITY.md](../atc-stack/docs/OBSERVABILITY.md). Outbound SMTP sends and webhook
-POSTs carry `X-Notify-Id` but no request-id or trace header. See
+[OBSERVABILITY.md](../atc-stack/docs/OBSERVABILITY.md). Outbound SMTP sends carry
+`X-Notify-Id` but no request-id or trace header. See
 [docs/READINESS.md](docs/READINESS.md) for the full contract.
 
 ## Backup / restore

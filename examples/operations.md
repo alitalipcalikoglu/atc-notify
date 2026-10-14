@@ -28,7 +28,7 @@ Alert on `notify_oldest_queued_age_seconds` above a few minutes and on `failed` 
 
 ## Environment
 
-Required: `NOTIFY_API_KEYS`, `SMTP_URL`, `SMTP_FROM`, `WEBHOOK_SIGNING_SECRET`. Generate secrets with `openssl rand -hex 32`. Full list with defaults: [.env.example](../.env.example).
+Required: `NOTIFY_API_KEYS`, `SMTP_URL`, `SMTP_FROM`. Generate API key secrets with `openssl rand -hex 32`. Full list with defaults: [.env.example](../.env.example).
 
 Give every calling service its own key so one can be rotated without touching the others:
 

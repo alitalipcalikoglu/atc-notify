@@ -5,7 +5,6 @@ Scenario-driven walkthroughs of every feature. All requests need `Authorization:
 | Example | Shows |
 |---|---|
 | [Send an email](send-email.md) | Queue a templated email, poll its delivery status |
-| [Send a webhook](send-webhook.md) | Signed webhook delivery and how the receiver verifies the signature |
 | [Idempotent sends](idempotency.md) | `idempotencyKey` so retries never send twice |
 | [Track, list and retry messages](message-status-and-retry.md) | `GET /v1/messages`, cursor paging, `lastError`, manual retry of failed messages |
 | [Templates and their schemas](templates.md) | Listing templates, validation errors, adding a template |

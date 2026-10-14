@@ -8,7 +8,7 @@ export class Database extends CoreDatabase {
       id              TEXT PRIMARY KEY,
       api_key_id      TEXT NOT NULL,
       idempotency_key TEXT,
-      channel         TEXT NOT NULL CHECK (channel IN ('email', 'webhook')),
+      channel         TEXT NOT NULL CHECK (channel IN ('email')),
       payload         TEXT NOT NULL,
       status          TEXT NOT NULL CHECK (status IN ('queued', 'processing', 'sent', 'failed')),
       attempts        INTEGER NOT NULL DEFAULT 0,
@@ -51,7 +51,7 @@ export class Database extends CoreDatabase {
     -- failure). NULL means the boundary was never reached. Set once, right before the channel's
     -- deliver() call; cleared on every write that leaves 'processing' (finish or release). NOTE
     -- (Stage 6.2): a non-NULL value proves the process reached this write, NOT that the external
-    -- SMTP/webhook call itself ever ran — the process can still crash in the gap between this
+    -- SMTP call itself ever ran — the process can still crash in the gap between this
     -- write committing and deliver() actually being invoked. Counting that gap as a real attempt is
     -- a deliberate, conservative choice, not a claim that delivery definitely started.
     ALTER TABLE messages ADD COLUMN call_started_at INTEGER;

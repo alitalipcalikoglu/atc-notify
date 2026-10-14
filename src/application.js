@@ -3,13 +3,10 @@ import { AuditClient } from '@atc-web/atc-service-core/audit';
 import { readServiceVersion } from '@atc-web/atc-service-core/fastify';
 import { Lifecycle } from '@atc-web/atc-service-core/lifecycle';
 import { ConsoleLogger } from '@atc-web/atc-service-core/log';
-import { DisabledChannel } from './channels/disabled.js';
 import { EmailChannel } from './channels/email.js';
-import { WebhookChannel, WebhookSigner } from './channels/webhook.js';
 import { Config } from './config.js';
 import { Database } from './db.js';
 import { HeartbeatStore } from './heartbeat-store.js';
-import { NetGuard } from './net-guard.js';
 import { Backoff, Queue } from './queue.js';
 import { TemplateRegistry } from './templates/registry.js';
 import { Worker } from './worker.js';
@@ -44,23 +41,7 @@ export class Application {
       backoff: new Backoff(config.backoffBaseMs, config.backoffCapMs),
     });
     this.templates = TemplateRegistry.withDefaults();
-    // Stage 7: the webhook channel is legacy (README "Boundaries") and can be turned off with
-    // NOTIFY_WEBHOOK_CHANNEL=false. Disabling it never removes the "webhook" entry from this
-    // array (Worker#channels is keyed by name and NotifyApi's capability list depends on being
-    // able to tell the two apart) — it swaps in a DisabledChannel stand-in instead, so any
-    // message a caller already queued under channel:webhook still gets claimed and settled to a
-    // clear, deterministic terminal failure (see DisabledChannel) rather than silently stuck or
-    // retried forever.
-    this.channels = [
-      new EmailChannel({ templates: this.templates, from: config.smtpFrom, smtpUrl: config.smtpUrl }),
-      config.webhookChannelEnabled
-        ? new WebhookChannel({
-          signer: new WebhookSigner(config.webhookSigningSecret),
-          guard: new NetGuard({ allowHttp: config.webhookAllowHttp, allowedHosts: config.webhookAllowedHosts }),
-          timeoutMs: config.webhookTimeoutMs,
-        })
-        : new DisabledChannel('webhook', 'NOTIFY_WEBHOOK_CHANNEL=false'),
-    ];
+    this.channels = [new EmailChannel({ templates: this.templates, from: config.smtpFrom, smtpUrl: config.smtpUrl })];
     /** @type {import('fastify').FastifyInstance|null} */
     this.app = null;
     /** @type {Worker|null} */
@@ -96,7 +77,7 @@ export class Application {
     // Stage 6.1: the worst-case duration of one real call — not LOCK_TTL_MS (the lease TTL, now
     // decoupled from call duration by the heartbeat) — is what bounds both the worker's own drain
     // wait and the process-wide force-exit timer below.
-    const callCeilingMs = Math.max(EmailChannel.SMTP_WORST_CASE_MS, config.webhookTimeoutMs);
+    const callCeilingMs = EmailChannel.SMTP_WORST_CASE_MS;
     const { drainMs, forceExitMs } = config.shutdownTimers(callCeilingMs);
 
     if (runsWorker) {

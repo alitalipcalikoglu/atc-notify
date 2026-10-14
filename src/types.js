@@ -24,10 +24,6 @@
  * @property {ApiKey[]} apiKeys
  * @property {string} smtpUrl              nodemailer connection URL, or "json:" for the dev transport.
  * @property {string} smtpFrom             Default From header.
- * @property {string} webhookSigningSecret HMAC key for outgoing webhook signatures.
- * @property {string[]} webhookAllowedHosts Empty = any public host.
- * @property {boolean} webhookAllowHttp
- * @property {number} webhookTimeoutMs
  * @property {number} maxAttempts
  * @property {number} backoffBaseMs
  * @property {number} backoffCapMs
@@ -37,7 +33,6 @@
  * @property {number} heartbeatMs          How often an in-flight delivery's lock is renewed; must be < lockTtlMs.
  * @property {number} retentionDays
  * @property {number} rateLimitMax         Requests per minute per API key.
- * @property {boolean} webhookChannelEnabled `NOTIFY_WEBHOOK_CHANNEL`, default true; see README "Boundaries".
  */
 
 /** @typedef {import('./config.js').Config} Config */
@@ -50,8 +45,8 @@
  * @property {string} id
  * @property {string} api_key_id
  * @property {string|null} idempotency_key
- * @property {'email'|'webhook'} channel
- * @property {string} payload            JSON-encoded {@link EmailPayload} or {@link WebhookPayload}.
+ * @property {'email'} channel
+ * @property {string} payload            JSON-encoded {@link EmailPayload}.
  * @property {MessageStatus} status
  * @property {number} attempts
  * @property {number} max_attempts
@@ -75,15 +70,6 @@
  * @property {string[]} [bcc]
  * @property {string} [replyTo]
  * @property {Record<string, unknown>} data
- */
-
-/**
- * @typedef {object} WebhookPayload
- * @property {'webhook'} channel
- * @property {string} url
- * @property {string} event
- * @property {Record<string, unknown>} data
- * @property {Record<string, string>} [headers]
  */
 
 /**

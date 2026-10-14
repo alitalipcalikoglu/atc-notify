@@ -3,16 +3,16 @@ import { test } from 'node:test';
 import { Database } from '../src/db.js';
 import { Backoff, Queue } from '../src/queue.js';
 import { Worker } from '../src/worker.js';
-import { testConfig, testEmailChannel, testPresence, testQueue, testWebhookChannel } from './helpers.js';
+import { testConfig, testEmailChannel, testPresence, testQueue } from './helpers.js';
 
 const silent = /** @type {any} */ ({ info() {}, warn() {}, error() {}, fatal() {}, debug() {}, trace() {}, child() { return this; } });
-const payload = { channel: 'webhook', url: 'https://api.example/x', event: 'e', data: {} };
+const payload = { channel: 'email', template: 'generic', to: ['a@example.com'], data: {} };
 
 test('Queue: claim hands the whole batch one fresh owner_token', () => {
   const config = testConfig();
   const q = testQueue(config);
-  q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
-  q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
+  q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   const [r1, r2] = q.claim(2, 0);
   assert.ok(r1.owner_token && r1.owner_token === r2.owner_token, 'one token per claim call, shared by the whole batch');
 });
@@ -20,7 +20,7 @@ test('Queue: claim hands the whole batch one fresh owner_token', () => {
 test('Queue: markSent/markFailure are a no-op once the owner_token no longer matches (fencing)', () => {
   const config = testConfig();
   const q = testQueue(config);
-  const { row } = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  const { row } = q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   const [claimed] = q.claim(1, 0);
   const staleToken = /** @type {string} */ (claimed.owner_token);
   assert.equal(q.markSent(row.id, staleToken, 'msg-1', 100), true);
@@ -31,7 +31,7 @@ test('Queue: markSent/markFailure are a no-op once the owner_token no longer mat
 test('Queue: heartbeat renews the lock only while the token still owns the row', () => {
   const config = testConfig();
   const q = testQueue(config);
-  q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   const [claimed] = q.claim(1, 0);
   const token = /** @type {string} */ (claimed.owner_token);
   assert.equal(q.heartbeat(claimed.id, token, 10_000, 30_000), true);
@@ -43,7 +43,7 @@ test('Queue: heartbeat renews the lock only while the token still owns the row',
 test('Queue: reclaimExpired is atomic against a concurrent heartbeat for the same row', () => {
   const config = testConfig();
   const q = testQueue(config);
-  q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   const [claimed] = q.claim(1, 0);
   const token = /** @type {string} */ (claimed.owner_token);
   const reclaimed = q.reclaimExpired(config.lockTtlMs + 1);
@@ -55,7 +55,7 @@ test('Worker: recover() only reclaims EXPIRED locks, not a lock still within its
   const config = testConfig({ LOCK_TTL_MS: '5000', HEARTBEAT_MS: '1000' });
   const q = testQueue(config);
   const presence = testPresence();
-  const { row } = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  const { row } = q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   const [claimed] = q.claim(1, 0);
   q.markCallStarted(claimed.id, /** @type {string} */ (claimed.owner_token), 0); // simulate the send having actually started
   const worker = new Worker({ queue: q, presence, channels: [], log: silent, options: { concurrency: 1, pollMs: 100, retentionDays: 30, heartbeatMs: 1_000, drainMs: 5_000 }, now: () => 0 });
@@ -71,7 +71,7 @@ test('Worker: recover() only reclaims EXPIRED locks, not a lock still within its
 test('Worker: a late-returning owner cannot overwrite a message another worker already reclaimed', async () => {
   const config = testConfig({ LOCK_TTL_MS: '5000', HEARTBEAT_MS: '1000' });
   const q = testQueue(config);
-  const { row } = q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  const { row } = q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   const [claimed] = q.claim(1, 0);
   const staleToken = /** @type {string} */ (claimed.owner_token);
   q.markCallStarted(claimed.id, staleToken, 0); // simulate the send having actually started before the crash
@@ -106,8 +106,8 @@ test('Worker: heartbeat keeps a long in-flight send owned across the original lo
 test('Queue: batch-shared owner_token — finishing message A does not affect sibling B\'s ownership or state (Stage 6.1)', () => {
   const config = testConfig();
   const q = testQueue(config);
-  q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
-  q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload }, 0);
+  q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
+  q.enqueue({ apiKeyId: 'a', channel: 'email', payload }, 0);
   const [a, b] = q.claim(2, 0);
   assert.equal(a.owner_token, b.owner_token, 'same batch, same token');
   assert.equal(q.markSent(a.id, /** @type {string} */ (a.owner_token), 'ok-a', 10), true);
@@ -128,7 +128,7 @@ test('Worker: stop() is bounded by drainMs even if an in-flight send never resol
   /** @type {(v?: unknown) => void} */
   let neverResolve = () => {};
   const stuckChannel = {
-    name: 'webhook',
+    name: 'email',
     deliver: () => new Promise((resolve) => { neverResolve = resolve; }),
     isRetryable: () => true,
     verify: async () => {},
@@ -141,7 +141,7 @@ test('Worker: stop() is bounded by drainMs even if an in-flight send never resol
     error(/** @type {object} */ obj, /** @type {string} */ msg) { errors.push([obj, msg]); },
   });
   const worker = new Worker({ queue: q, presence, channels: [/** @type {any} */ (stuckChannel)], log, options: { concurrency: 1, pollMs: 20, retentionDays: 30, heartbeatMs: 1_000, drainMs: 100 } });
-  q.enqueue({ apiKeyId: 'a', channel: 'webhook', payload });
+  q.enqueue({ apiKeyId: 'a', channel: 'email', payload });
   worker.start();
   const deadline = Date.now() + 2_000;
   while (q.stats().processing === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));

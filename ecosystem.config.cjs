@@ -4,16 +4,14 @@
 // Environment comes from ./.env via Node's --env-file, so secrets never sit in this file.
 const path = require('node:path');
 
-// kill_timeout must safely exceed the internal force-exit timer, which (Stage 6.1 fix) is now
-// `max(SMTP_WORST_CASE_MS=50_000, WEBHOOK_TIMEOUT_MS) + 10_000` — the worst-case CALL duration,
-// not LOCK_TTL_MS (the lease TTL; the heartbeat decouples how long a call may run from how long
-// its lease lasts without one, so sizing shutdown timers off the lease TTL was itself a bug fixed
-// in Stage 6.1 — see application.js). WEBHOOK_TIMEOUT_MS's own ceiling is 120_000ms (config.js),
-// so the worst case here is max(50_000, 120_000) + 10_000 = 130_000. This file is loaded by PM2
-// with plain require(), before .env is ever read, so it cannot see the operator's actual
-// WEBHOOK_TIMEOUT_MS; it has to assume the worst case that config validation still allows.
-// 150_000 = 130_000 + 20_000 (drain/flush/close headroom on top of the force-exit timer itself).
-const KILL_TIMEOUT_MS = 150_000;
+// kill_timeout must safely exceed the internal force-exit timer, which (Stage 6.1 fix) is
+// `SMTP_WORST_CASE_MS + 10_000` = 50_000 + 10_000 = 60_000 — the worst-case CALL duration, not
+// LOCK_TTL_MS (the lease TTL; the heartbeat decouples how long a call may run from how long its
+// lease lasts without one, so sizing shutdown timers off the lease TTL was itself a bug fixed in
+// Stage 6.1 — see application.js). The SMTP timeouts are hardcoded in EmailChannel, so no .env
+// value can raise this ceiling.
+// 80_000 = 60_000 + 20_000 (drain/flush/close headroom on top of the force-exit timer itself).
+const KILL_TIMEOUT_MS = 80_000;
 
 module.exports = {
   apps: [
@@ -33,7 +31,7 @@ module.exports = {
       kill_timeout: KILL_TIMEOUT_MS, // SIGTERM → stop claiming → stop HTTP intake → drain in-flight
                                      // (up to the worst-case call duration) → close channels →
                                      // flush audit → close DB → exit (internal force-exit at
-                                     // max(50_000, WEBHOOK_TIMEOUT_MS) + 10s)
+                                     // SMTP_WORST_CASE_MS + 10s = 60s)
       merge_logs: true,
       env: { NODE_ENV: 'production' },
     },

@@ -1,4 +1,4 @@
-/** @typedef {import('../types.js').EmailPayload|import('../types.js').WebhookPayload} Payload */
+/** @typedef {import('../types.js').EmailPayload} Payload */
 
 /**
  * Base class for delivery channels. A channel turns a queued payload into an outbound

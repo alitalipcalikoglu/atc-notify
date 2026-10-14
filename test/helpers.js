@@ -3,14 +3,11 @@ import { EmailChannel } from '../src/channels/email.js';
 import { Config } from '../src/config.js';
 import { Database } from '../src/db.js';
 import { HeartbeatStore } from '../src/heartbeat-store.js';
-import { NetGuard } from '../src/net-guard.js';
 import { Backoff, Queue } from '../src/queue.js';
 import { TemplateRegistry } from '../src/templates/registry.js';
-import { WebhookChannel, WebhookSigner } from '../src/channels/webhook.js';
 
 export const API_KEY = 'k'.repeat(40);
 export const OTHER_KEY = 'o'.repeat(40);
-export const WEBHOOK_SECRET = 's'.repeat(40);
 
 /**
  * An OS-assigned free TCP port, so a test that actually binds `PORT` (unlike most of this suite,
@@ -31,7 +28,7 @@ export function freePort() {
 }
 
 /**
- * Test configuration: in-memory DB, JSON mail transport, http webhooks allowed, tiny backoff.
+ * Test configuration: in-memory DB, JSON mail transport, tiny backoff.
  * @param {Record<string, string>} [overrides]
  */
 export function testConfig(overrides = {}) {
@@ -39,8 +36,6 @@ export function testConfig(overrides = {}) {
     NOTIFY_API_KEYS: `test:${API_KEY},other:${OTHER_KEY}`,
     SMTP_URL: 'json:',
     SMTP_FROM: 'Test <no-reply@test.local>',
-    WEBHOOK_SIGNING_SECRET: WEBHOOK_SECRET,
-    WEBHOOK_ALLOW_HTTP: 'true',
     DB_PATH: ':memory:',
     BACKOFF_BASE_MS: '100',
     BACKOFF_CAP_MS: '1000',
@@ -89,23 +84,6 @@ export function testEmailChannel(config, { fail } = {}) {
     },
   });
   return { channel, sent };
-}
-
-/**
- * Webhook channel; by default the guard accepts loopback so tests can hit a local receiver.
- * @param {Config} config
- * @param {{ allowPrivate?: boolean }} [opts]
- */
-export function testWebhookChannel(config, { allowPrivate = true } = {}) {
-  return new WebhookChannel({
-    signer: new WebhookSigner(config.webhookSigningSecret),
-    guard: new NetGuard({
-      allowHttp: config.webhookAllowHttp,
-      allowedHosts: config.webhookAllowedHosts,
-      ...(allowPrivate ? { isPublic: () => true } : {}),
-    }),
-    timeoutMs: config.webhookTimeoutMs,
-  });
 }
 
 /** Silent pino-compatible logger. */

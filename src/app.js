@@ -4,7 +4,6 @@ import Fastify from 'fastify';
 import { AuditClient } from '@atc-web/atc-service-core/audit';
 import { registerInfo, registerOpenApi, registerProbes, registerRequestContext, requestOptions } from '@atc-web/atc-service-core/fastify';
 import { ApiKeyAuth } from './auth.js';
-import { DisabledChannel } from './channels/disabled.js';
 import { IdempotencyConflictError, InvalidCursorError } from './queue.js';
 
 /** @typedef {import('./config.js').Config} Config */
@@ -25,10 +24,8 @@ export class MessageView {
       id: row.id,
       channel: row.channel,
       status: row.status,
-      template: payload.template ?? null,
-      event: payload.event ?? null,
-      to: payload.to ?? null,
-      url: payload.url ?? null,
+      template: payload.template,
+      to: payload.to,
       attempts: row.attempts,
       maxAttempts: row.max_attempts,
       nextAttemptAt: row.status === 'queued' ? iso(row.next_attempt_at) : null,
@@ -71,25 +68,6 @@ class Schemas {
     };
   }
 
-  static webhookBody = {
-    type: 'object',
-    additionalProperties: false,
-    required: ['channel', 'url', 'event', 'data'],
-    properties: {
-      channel: { const: 'webhook' },
-      url: { type: 'string', format: 'uri', maxLength: 2048 },
-      event: { type: 'string', minLength: 1, maxLength: 100, pattern: '^[a-zA-Z0-9_.:-]+$' },
-      data: { type: 'object' },
-      headers: {
-        type: 'object',
-        maxProperties: 10,
-        propertyNames: { pattern: '^([Xx]-[A-Za-z0-9-]{1,60}|[Aa]uthorization)$' },
-        additionalProperties: { type: 'string', maxLength: 1024, pattern: '^[\\x20-\\x7E]*$' },
-      },
-      idempotencyKey: Schemas.idempotencyKey,
-    },
-  };
-
   static idParams = { type: 'object', properties: { id: Schemas.uuid }, required: ['id'] };
 
   static listQuery = {
@@ -108,10 +86,8 @@ class Schemas {
       id: Schemas.uuid,
       channel: { type: 'string' },
       status: { type: 'string' },
-      template: { type: 'string', nullable: true },
-      event: { type: 'string', nullable: true },
-      to: { type: 'array', items: { type: 'string' }, nullable: true },
-      url: { type: 'string', nullable: true },
+      template: { type: 'string' },
+      to: { type: 'array', items: { type: 'string' } },
       attempts: { type: 'integer' },
       maxAttempts: { type: 'integer' },
       nextAttemptAt: { type: 'string', nullable: true },
@@ -202,10 +178,7 @@ export class NotifyApi {
     registerInfo(app, {
       service: 'atc-notify',
       version: this.version,
-      // Real, currently-enabled channels only — a DisabledChannel stand-in (Stage 7,
-      // NOTIFY_WEBHOOK_CHANNEL=false) is not a supported capability, so it's excluded here even
-      // though it's still present in `this.channels` for lookup/settlement purposes.
-      capabilities: [...this.channels.filter((ch) => !(ch instanceof DisabledChannel)).map((ch) => ch.name), 'templates', 'idempotency'],
+      capabilities: [...this.channels.map((ch) => ch.name), 'templates', 'idempotency'],
       schemaVersion: this.queue.db.schemaVersion,
     });
     await app.register((api) => this.#registerV1(api), { prefix: '/v1' });
@@ -255,12 +228,7 @@ export class NotifyApi {
 
     api.post('/messages', { config: { audit: AuditClient.route('atc-notify.message.create', (_r, b) => ({ type: 'message', id: b.id }), (_r, b) => ({ channel: b?.channel, status: b?.status })) },
       schema: {
-        body: {
-          type: 'object',
-          required: ['channel'],
-          discriminator: { propertyName: 'channel' },
-          oneOf: [Schemas.emailBody(this.templates.names()), Schemas.webhookBody],
-        },
+        body: Schemas.emailBody(this.templates.names()),
         response: { 200: Schemas.message, 202: Schemas.message, 400: Schemas.error },
       },
     }, this.#createMessage);
@@ -289,21 +257,16 @@ export class NotifyApi {
   /** @type {import('fastify').RouteHandlerMethod} */
   #createMessage = async (request, reply) => {
     const { idempotencyKey, ...payload } = /** @type {any} */ (request.body);
-    if (payload.channel === 'webhook' && !this.config.webhookChannelEnabled) {
-      throw Object.assign(new Error('the webhook channel is disabled on this instance (NOTIFY_WEBHOOK_CHANNEL=false)'), { statusCode: 403, code: 'WEBHOOK_CHANNEL_DISABLED' });
-    }
-    if (payload.channel === 'email') {
-      const validate = this.dataValidators.get(payload.template);
-      if (!validate) throw Object.assign(new Error(`unknown template "${payload.template}"`), { statusCode: 400, code: 'UNKNOWN_TEMPLATE' });
-      if (!validate(payload.data)) {
-        return reply.code(400).send({
-          error: {
-            code: 'VALIDATION_FAILED',
-            message: `data does not match template "${payload.template}"`,
-            details: (validate.errors ?? []).map((v) => ({ path: `/data${v.instancePath}`, message: v.message, params: v.params })),
-          },
-        });
-      }
+    const validate = this.dataValidators.get(payload.template);
+    if (!validate) throw Object.assign(new Error(`unknown template "${payload.template}"`), { statusCode: 400, code: 'UNKNOWN_TEMPLATE' });
+    if (!validate(payload.data)) {
+      return reply.code(400).send({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: `data does not match template "${payload.template}"`,
+          details: (validate.errors ?? []).map((v) => ({ path: `/data${v.instancePath}`, message: v.message, params: v.params })),
+        },
+      });
     }
     const { row, created } = this.queue.enqueue({ apiKeyId: request.apiKeyId, idempotencyKey, channel: payload.channel, payload });
     request.log.info({ messageId: row.id, channel: row.channel, created }, created ? 'message queued' : 'idempotent replay');

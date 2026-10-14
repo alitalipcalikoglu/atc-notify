@@ -3,8 +3,7 @@ info:
   title: atc-notify
   version: 1.1.0
   description: >-
-    Notification service for the atc-web platform: accepts email and signed-webhook messages over
-    HTTP, persists them to a durable queue, and delivers them asynchronously through a separate
+    Notification service for the atc-web platform: accepts email messages over HTTP, persists them to a durable queue, and delivers them asynchronously through a separate
     worker process. Callers poll message status by id or list; delivery is never synchronous with
     the create call.
 
@@ -16,7 +15,7 @@ security:
 
 tags:
   - name: messages
-    description: Queued email/webhook messages and their delivery status.
+    description: Queued email messages and their delivery status.
   - name: templates
     description: Email templates bundled with this service.
   - name: operations
@@ -86,9 +85,8 @@ paths:
       operationId: atc-notify.info.get
       summary: Service identity and capabilities
       description: >-
-        Public, unauthenticated, uncached. `capabilities` is computed live from the channels
-        actually wired into this instance: it drops `"webhook"` when `NOTIFY_WEBHOOK_CHANNEL=false`
-        (Stage 7), so it always reflects real, currently-enabled behavior rather than a static list.
+        Public, unauthenticated, uncached. `capabilities` lists the channels wired into this
+        instance plus `templates` and `idempotency`.
       tags: [operations]
       security: []
       x-stack-visibility: public
@@ -127,8 +125,7 @@ paths:
       description: >-
         Inserts the message and returns immediately (`202` for a newly-created message, `200` when
         the request replays an existing `idempotencyKey`); actual delivery happens later, out of
-        band, via the worker process. Body is polymorphic on `channel` (`email` or `webhook`); an
-        `email` body's `data` is additionally validated, at request time, against the named
+        band, via the worker process. `channel` is always `email`; the body's `data` is additionally validated, at request time, against the named
         template's own JSON Schema (`GET /v1/templates` lists the templates this instance ships
         with, each with its schema).
 
@@ -148,14 +145,7 @@ paths:
         content:
           application/json:
             schema:
-              oneOf:
-                - $ref: '#/components/schemas/MessageCreateEmail'
-                - $ref: '#/components/schemas/MessageCreateWebhook'
-              discriminator:
-                propertyName: channel
-                mapping:
-                  email: '#/components/schemas/MessageCreateEmail'
-                  webhook: '#/components/schemas/MessageCreateWebhook'
+              $ref: '#/components/schemas/MessageCreateEmail'
       responses:
         '200':
           description: Idempotent replay — an existing message with the same `idempotencyKey`, channel and payload was returned unchanged.
@@ -182,21 +172,14 @@ paths:
         '400':
           description: >-
             `VALIDATION_FAILED` — the body failed JSON Schema validation (unknown/missing field,
-            wrong `channel` discriminator, malformed email/URL/event name, disallowed webhook
-            header name, etc.), or an `email` message's `data` failed the named template's own
-            schema (`details[].path` is prefixed `/data`).
+            a `channel` other than `email`, malformed address, etc.), or `data` failed the named
+            template's own schema (`details[].path` is prefixed `/data`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: '`WEBHOOK_CHANNEL_DISABLED` — `channel: "webhook"` was submitted while this instance runs with `NOTIFY_WEBHOOK_CHANNEL=false`.'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorEnvelope'
         '409':
           description: '`IDEMPOTENCY_CONFLICT` — `idempotencyKey` was already used by this API key with a different channel or payload.'
           content:
@@ -534,10 +517,8 @@ components:
           items:
             type: string
           description: >-
-            Real, currently-enabled behaviors only. Always includes `templates` and `idempotency`;
-            includes `email` when the email channel is configured, and `webhook` unless
-            `NOTIFY_WEBHOOK_CHANNEL=false`.
-          example: [email, webhook, templates, idempotency]
+            Real, currently-enabled behaviors: `email`, `templates` and `idempotency`.
+          example: [email, templates, idempotency]
         schemaVersion:
           type: integer
           description: Current SQLite `PRAGMA user_version` for this instance's database.
@@ -557,9 +538,7 @@ components:
         - channel
         - status
         - template
-        - event
         - to
-        - url
         - attempts
         - maxAttempts
         - nextAttemptAt
@@ -574,23 +553,17 @@ components:
           format: uuid
         channel:
           type: string
-          enum: [email, webhook]
+          enum: [email]
         status:
           $ref: '#/components/schemas/MessageStatus'
         template:
-          type: [string, 'null']
-          description: 'Template name. Populated for `channel: email` only; `null` for `webhook`.'
-        event:
-          type: [string, 'null']
-          description: 'Event name. Populated for `channel: webhook` only; `null` for `email`.'
+          type: string
+          description: Template name.
         to:
-          type: [array, 'null']
+          type: array
           items:
             type: string
-          description: 'Recipient addresses. Populated for `channel: email` only; `null` for `webhook`.'
-        url:
-          type: [string, 'null']
-          description: 'Target URL. Populated for `channel: webhook` only; `null` for `email`.'
+          description: Recipient addresses.
         attempts:
           type: integer
           description: Delivery attempts made so far.
@@ -606,7 +579,7 @@ components:
           description: Error from the most recent failed attempt, truncated to 2000 characters.
         providerId:
           type: [string, 'null']
-          description: Provider reference from the successful attempt (SMTP message id, or `http <status>` for a webhook), once `status` is `sent`.
+          description: Provider reference from the successful attempt (SMTP message id), once `status` is `sent`.
         createdAt:
           type: string
           format: date-time
@@ -723,41 +696,6 @@ components:
                       label: { type: string, minLength: 1, maxLength: 60 }
                       url: { type: string, format: uri, pattern: '^https?://', maxLength: 2048 }
                   footnote: { type: string, maxLength: 500 }
-
-    MessageCreateWebhook:
-      type: object
-      additionalProperties: false
-      required: [channel, url, event, data]
-      properties:
-        channel:
-          const: webhook
-        url:
-          type: string
-          format: uri
-          maxLength: 2048
-          description: HTTP(S) target. Resolved through an SSRF guard at delivery time; redirects are not followed.
-        event:
-          type: string
-          minLength: 1
-          maxLength: 100
-          pattern: '^[a-zA-Z0-9_.:-]+$'
-        data:
-          type: object
-          description: >-
-            Free-form JSON, opaque to notify — sent verbatim as the delivered payload's `data`
-            field. No further schema is enforced (unlike the `email` channel's per-template `data`).
-        headers:
-          type: object
-          maxProperties: 10
-          propertyNames:
-            pattern: '^([Xx]-[A-Za-z0-9-]{1,60}|[Aa]uthorization)$'
-          additionalProperties:
-            type: string
-            maxLength: 1024
-            pattern: '^[\x20-\x7E]*$'
-          description: Extra outbound request headers. Only `X-*` and `Authorization` names are allowed; values must be single-line printable ASCII (no CR/LF).
-        idempotencyKey:
-          $ref: '#/components/schemas/IdempotencyKey'
 
     EmailList:
       type: array

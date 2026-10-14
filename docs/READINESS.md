@@ -2,10 +2,10 @@
 
 ## Purpose
 `atc-notify` is the platform's queued delivery service: other services enqueue a notification
-(templated email over SMTP, or a signed webhook) via `POST /v1/messages`; `atc-notify` persists it in
+(templated email over SMTP) via `POST /v1/messages`; `atc-notify` persists it in
 SQLite, renders and delivers it from an in-process background worker with retries and backoff, and
 exposes delivery status and lifecycle through `GET` endpoints. It lets the rest of the platform
-fire-and-forget notifications without every caller embedding its own SMTP/webhook client, retry
+fire-and-forget notifications without every caller embedding its own SMTP client, retry
 logic and delivery-state bookkeeping.
 
 ## Dependencies
@@ -21,16 +21,13 @@ logic and delivery-state bookkeeping.
 - **SMTP server** (`SMTP_URL`): required at startup — `Config.fromEnv` throws if missing, or if it
   doesn't start with `smtp://`/`smtps://` and isn't the literal `json:` dev value. Functionally,
   only email delivery depends on it directly: if SMTP is unreachable, `EmailChannel.deliver()`
-  throws and the message retries per the backoff policy; the HTTP API and webhook delivery keep
+  throws and the message retries per the backoff policy; the HTTP API keeps
   working. However, `GET /ready` calls `verify()` on every registered channel, and
   `EmailChannel.verify()` performs a real SMTP handshake (`transport.verify()`) — so an unreachable
-  SMTP server makes the *whole service* report `503` from `/ready`, even though webhook delivery
-  and the read/write API would still function. This coupling is real and un-mitigated in the code
+  SMTP server makes the *whole service* report `503` from `/ready`, even though the read/write API
+  would still function. This coupling is real and un-mitigated in the code
   today.
-- **Webhook receivers**: not a fixed dependency — each is an arbitrary caller-supplied URL, vetted
-  by `NetGuard` before every delivery attempt. An unreachable or blocked receiver only fails that
-  message's delivery (retryable or not depending on cause); it never affects `/ready`, the API, or
-  email delivery.
+Outbound webhooks are not part of this service; they are the job of `atc-webhook-out`.
 
 ## Persistence
 Engine: SQLite via Node's built-in `node:sqlite` (`DatabaseSync`), no native module. File at
@@ -38,7 +35,7 @@ Engine: SQLite via Node's built-in `node:sqlite` (`DatabaseSync`), no native mod
 WAL`, `synchronous = NORMAL`, `busy_timeout = 5000`, `foreign_keys = ON`.
 
 Schema: `messages` — `id` (PK), `api_key_id`, `idempotency_key`, `channel`
-(`email`/`webhook`), `payload` (JSON text), `status` (`queued`/`processing`/`sent`/`failed`),
+(`email`), `payload` (JSON text), `status` (`queued`/`processing`/`sent`/`failed`),
 `attempts`, `max_attempts`, `next_attempt_at`, `locked_until`, `last_error`, `provider_id`,
 `created_at`, `updated_at`, `sent_at`, and, since Stage 6, `owner_token` (the fencing token of
 whoever currently holds the lock; null when not `processing`). Four indexes: a unique index on
@@ -71,8 +68,7 @@ endpoint equally.
 ## Readiness endpoint
 `GET /ready`, no auth. Checks `queue.db.ping()` (`SELECT 1`) and, for every registered channel,
 `channel.verify()` — `EmailChannel.verify()` does a real `transport.verify()` SMTP handshake (a
-no-op against the `json:` dev transport); `WebhookChannel` does not override `verify()`, so it
-inherits the base `Channel`'s no-op and is effectively never checked. The result is cached in
+no-op against the `json:` dev transport). The result is cached in
 `this.readyCache` for `NotifyApi.READY_CACHE_MS` = `30_000` ms — a hardcoded constant, not
 environment-configurable. A request inside that 30 s window reuses the cached outcome rather than
 re-probing. Returns `200 {status:'ok', worker:'running'|'stopped'}` when the cached check passed,
@@ -106,7 +102,7 @@ why):
    so the loser doesn't leak a timer. On timeout it logs `'drain timed out; continuing shutdown
    with sends still in flight'` and falls through to the remaining steps instead of hanging.
 4. `for (const ch of this.channels) ch.close()` — `EmailChannel` closes its pooled SMTP
-   connections; `WebhookChannel` has no `close()` override, so it's a no-op.
+   connections.
 5. `await this.audit.close()` — stops the flush timer and performs one final `flush()`, using the
    same retry/backoff as a normal flush.
 6. `this.db.close()`.
@@ -116,36 +112,34 @@ why):
 needing to record an audit event could queue it into an already-flushed, already-stopped buffer).
 
 On success: `process.exit(0)`. Force-exit timeout: a `setTimeout(...).unref()` set to
-`callCeilingMs + 10_000`, where `callCeilingMs = Math.max(EmailChannel.SMTP_WORST_CASE_MS,
-config.webhookTimeoutMs)` — default `Math.max(50_000, 10_000) + 10_000 = 60_000` ms. The worker's
+`callCeilingMs + 10_000`, where `callCeilingMs = EmailChannel.SMTP_WORST_CASE_MS` — `50_000 +
+10_000 = 60_000` ms. The worker's
 own `drainMs` (previous step) uses the same `callCeilingMs`, plus a smaller margin:
-`callCeilingMs + 5_000` — default `55_000` ms — so the drain timeout always fires first and the
+`callCeilingMs + 5_000` — `55_000` ms — so the drain timeout always fires first and the
 remaining shutdown steps (channel close, audit flush, DB close) get a chance to run before the
 force-exit timer hard-kills the process.
 
 **Stage 6.1 fix**: before this stage, `forceExitMs` was `config.lockTtlMs + 10_000` — the lease
 TTL, not the call duration. That was sound before the heartbeat existed (a send could never
-outlive its own lease), but the heartbeat decouples the two: a legitimate SMTP/webhook call can now
+outlive its own lease), but the heartbeat decouples the two: a legitimate SMTP call can now
 run far longer than `LOCK_TTL_MS` as long as it keeps renewing the lease, so bounding shutdown by
 `LOCK_TTL_MS` risked force-exiting mid-call on a perfectly healthy, still-heartbeating send.
 `EmailChannel.SMTP_WORST_CASE_MS` (`connectionTimeout + greetingTimeout + socketTimeout` from
-`createTransport`, `= 50_000`) and `config.webhookTimeoutMs` are the real ceilings on how long one
-external call can legitimately take, so `callCeilingMs` replaces `lockTtlMs` as the basis for both
+`createTransport`, `= 50_000`) is the real ceiling on how long one external call can
+legitimately take, so `callCeilingMs` replaces `lockTtlMs` as the basis for both
 `drainMs` and `forceExitMs`.
 
-Comparison with PM2: `atc-notify/ecosystem.config.cjs` sets `kill_timeout: 150000` (150 s; was `630000`,
-sized for the old `lockTtlMs`-based formula and left comfortably oversized once `forceExitMs`
-dropped to a call-duration basis). `150_000 = max(SMTP_WORST_CASE_MS=50_000,
-WEBHOOK_TIMEOUT_MS max 120_000) + 10_000 (force-exit margin) = 130_000`, plus `20_000` headroom —
-comfortably above the worst-case force-exit timer regardless of how `WEBHOOK_TIMEOUT_MS` is
-configured within its validated range.
+Comparison with PM2: `atc-notify/ecosystem.config.cjs` sets `kill_timeout: 80000` (80 s).
+`80_000 = SMTP_WORST_CASE_MS (50_000) + 10_000 (force-exit margin) = 60_000`, plus `20_000`
+headroom — comfortably above the force-exit timer. The SMTP timeouts are hardcoded, so no
+environment setting can push the force-exit timer past it.
 
 The five numbers that matter for notify's shutdown, in the same relationship as `atc-scheduler` and
 `atc-webhook-out`: worker drain timeout (`drainMs = callCeilingMs + 5_000`); the external call's own
-timeout ceiling (`callCeilingMs`, the larger of the SMTP worst case and `WEBHOOK_TIMEOUT_MS`); the
+timeout ceiling (`callCeilingMs`, the SMTP worst case, `50_000` ms); the
 heartbeat interval (`HEARTBEAT_MS`) that renews a lease during an in-flight call; the lease TTL
 (`LOCK_TTL_MS`), now fully decoupled from call duration by the heartbeat; and PM2's `kill_timeout`
-(150 s), which sits above the app's own force-exit timer so PM2 never SIGKILLs before the app has a
+(80 s), which sits above the app's own force-exit timer so PM2 never SIGKILLs before the app has a
 chance to exit on its own.
 
 ## Resource limits
@@ -160,18 +154,9 @@ chance to exit on its own.
   to `20` in the handler when omitted.
 - `max_memory_restart: '300M'` in `ecosystem.config.cjs` — PM2 restarts the process if its RSS
   exceeds 300 MB.
-- Webhook custom headers: at most 10 properties, each value at most 1024 characters, names
-  restricted to `X-*` or `Authorization` (schema in `src/app.js`).
 - Email address lists (`to`/`cc`/`bcc`): at most 10 addresses each.
 
 ## Timeouts
-- `WEBHOOK_TIMEOUT_MS` (default `10_000` ms, min `1000`, max `120_000` — Stage 6 changed the cap
-  from `lockTtlMs / 2` to a fixed ceiling): Node `http`/`https` request timeout for an outbound
-  webhook POST. On fire: `WebhookError` with `retryable: true`, `code: 'TIMEOUT'` — retried per the
-  backoff policy. The old cap existed because a send lasting more than half the lock's TTL risked
-  losing the lock before it could finish (there was no heartbeat to renew it); the heartbeat
-  (`HEARTBEAT_MS`, below) now protects a long send regardless of how `WEBHOOK_TIMEOUT_MS` and
-  `LOCK_TTL_MS` relate to each other, so the two no longer need to be coupled.
 - SMTP transport (real SMTP only, not `json:`): `connectionTimeout` 10 000 ms, `greetingTimeout`
   10 000 ms, `socketTimeout` 30 000 ms — all hardcoded in `EmailChannel.createTransport`, not
   environment-configurable. A timeout surfaces from nodemailer without a numeric `responseCode`,
@@ -184,11 +169,11 @@ chance to exit on its own.
 - `LOCK_TTL_MS` (default `120_000` ms, range `5_000`–`600_000`, upper bound added in Stage 6): how
   long a claimed (`processing`) message's lease lasts without a heartbeat before it becomes
   reclaimable as a failed attempt (`Queue#reclaimExpired`, previously `reapStale`'s unconditional
-  free reset). It also backs the graceful-shutdown force-exit delay (see above) — one env var
-  serving two purposes, unchanged from before Stage 6.
+  free reset). It does not affect shutdown timing: the drain and force-exit delays derive from
+  the SMTP worst-case call duration (see above).
 - `HEARTBEAT_MS` (default `10_000` ms, `min` 250, must be `< LOCK_TTL_MS`) — Stage 6. How often an
   in-flight send's lock is renewed (`Worker#execute`'s `setInterval`, cleared once the send
-  settles). Deliberately independent of `WEBHOOK_TIMEOUT_MS`/SMTP's own hardcoded timeouts — a send
+  settles). Deliberately independent of SMTP's own hardcoded timeouts — a send
   can run far longer than `LOCK_TTL_MS` without losing its lock, as long as its heartbeat keeps
   succeeding. See "Lease ownership".
 
@@ -232,11 +217,10 @@ chance to exit on its own.
   starts a fresh delivery cycle; calling it repeatedly across failure cycles can trigger further
   delivery attempts each time. There is no dedup token on retry the way there is on creation — a
   real gap, stated plainly rather than implied safe.
-- Actual delivery (SMTP send / webhook POST): not idempotent from the receiver's perspective. A
-  retry after an ambiguous outcome (e.g. the SMTP server accepted before the socket closed, or a
-  webhook receiver processed the request but the response timed out) can produce a duplicate send.
-  The only correlation token offered to receivers is the `X-Notify-Id` header — deduplication on
-  that id is the receiver's responsibility, not something `atc-notify` enforces.
+- Actual delivery (SMTP send): not idempotent from the recipient's perspective. A retry after an
+  ambiguous outcome (e.g. the SMTP server accepted before the socket closed) can produce a
+  duplicate email. The only correlation token offered downstream is the `X-Notify-Id` mail header —
+  deduplication on that id is the mail pipeline's responsibility, not something `atc-notify` enforces.
 
 ## Backup
 State that needs to survive a disk loss: the single SQLite file at `DB_PATH` (plus its `-wal`/
@@ -298,9 +282,6 @@ never directly from an untrusted client.
 Outbound, `atc-notify`'s own calls do not forward either header onward:
 - SMTP send (`src/channels/email.js`): no request-id or trace header of any kind is attached to
   the outbound mail; nodemailer's headers option only carries `X-Notify-Id` (the message id).
-- Webhook POST (`src/channels/webhook.js`): headers sent are `content-type`, `content-length`,
-  `user-agent`, `x-notify-id`, `x-notify-event` and the HMAC signature header — no
-  `X-Request-Id`/`traceparent`.
 - Audit forwarding (`src/net/audit-client.js`): the HTTP call to the audit service only sets
   `authorization` and `content-type` headers — no `X-Request-Id` is propagated as a header. The
   audit *event payload* does carry a `requestId` field (taken from `request.id`), but that travels
@@ -317,8 +298,7 @@ no separate read-only vs. write-capable key type. Rotation: no dedicated mechani
 means editing `NOTIFY_API_KEYS` and restarting or reloading the process; there is no live rotation,
 per-key expiry, or revocation list. Boundary validation: JSON Schema on every request body with
 `additionalProperties: false` (unknown fields rejected, not silently stripped —
-`removeAdditional: false`), email/URL/UUID format checks, a webhook header name/value allowlist,
-and per-template `data` validated against that template's own compiled schema. Explicitly out of
+`removeAdditional: false`), email/UUID format checks, and per-template `data` validated against that template's own compiled schema. Explicitly out of
 scope, per the README's "Out of scope by design": SMS/push channels and attachments; key rotation
 tooling and RBAC are absent but not explicitly called out there either — noted here instead.
 
@@ -358,8 +338,8 @@ transaction" reasoning). What it does with each expired row now depends on `call
 
 **Stage 6.2 correction — what `call_started_at IS NOT NULL` does and does not prove**: the write
 happens right before `Worker#deliver()` invokes `channel.deliver()`, not right after. A non-NULL
-value proves the process reached that line; it does NOT prove the external SMTP send or webhook
-POST itself ever started — the process can still crash in the gap between the `call_started_at`
+value proves the process reached that line; it does NOT prove the external SMTP send itself ever
+started — the process can still crash in the gap between the `call_started_at`
 write committing and `channel.deliver()` actually running. That gap is deliberately folded into the
 "real attempt" bucket rather than given a third state: the column marks "attempt intent recorded,
 external outcome unknown," and counting it as a real attempt is a conservative choice (it may cost
@@ -422,14 +402,14 @@ guarantee and its boundary (same host, local SQLite file only).
   actually-successful send gets retried.
 - **Heartbeat failure while a send is genuinely still in flight** (event loop stall, a slow/busy DB
   write for the heartbeat `UPDATE` itself): Stage 6. The heartbeat's own guarded write detects the
-  lost lock and logs a warning immediately, but cannot cancel the outbound SMTP/HTTP call already
+  lost lock and logs a warning immediately, but cannot cancel the outbound SMTP call already
   in progress. If the lock then expires and another process reclaims the message, the original
   call's eventual `markSent`/`markFailure` is rejected by the same `owner_token`/`status` guard
   (logged, not thrown) — its result is discarded, and the reclaim's own "lease expired" failed-
   attempt outcome is what stands. A genuinely successful send whose heartbeat failed can be
   silently wasted from the recipient's point of view and retried.
-- **A dependency times out mid-request.** Unchanged: for SMTP/webhook, handled as designed —
-  classified retryable or not per channel, backoff applied. For the audit service: no impact on the
+- **A dependency times out mid-request.** Unchanged: for SMTP, handled as designed —
+  classified retryable or not by SMTP reply code, backoff applied. For the audit service: no impact on the
   business request at all, since `record()` only appends to an in-memory buffer synchronously.
 - **The process is killed without a graceful shutdown** — SIGKILL, an OOM restart via
   `max_memory_restart`. Any message still `processing` at the moment of the kill is no longer stuck

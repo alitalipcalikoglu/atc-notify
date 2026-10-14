@@ -142,7 +142,7 @@ export class Queue {
    * DIFFERENT channel or payload, it's a conflict — the key identifies one logical send, not a
    * slot to overwrite — and throws {@link IdempotencyConflictError} rather than silently
    * succeeding with the original (stale) content.
-   * @param {{ apiKeyId: string, idempotencyKey?: string|null, channel: 'email'|'webhook', payload: object }} input
+   * @param {{ apiKeyId: string, idempotencyKey?: string|null, channel: 'email', payload: object }} input
    * @param {number} [now]
    * @returns {{ row: MessageRow, created: boolean }}
    */
@@ -221,7 +221,7 @@ export class Queue {
    * lets {@link reclaimExpired} tell a pure infra crash (worker died before this write ever landed,
    * message never got even this far) from a real attempt (this write landed). **Important:** a
    * landed `call_started_at` is proof the process reached this call, NOT proof the external
-   * SMTP/webhook side effect itself ran — the process can still crash in the gap between this write
+   * SMTP side effect itself ran — the process can still crash in the gap between this write
    * committing and `channel.deliver()` actually being invoked (see `Worker#execute`), and that gap
    * is deliberately folded into the "real attempt" bucket rather than given its own third state.
    * `call_started_at IS NOT NULL` therefore means "attempt intent recorded, external outcome
@@ -259,7 +259,7 @@ export class Queue {
    *
    * **What `call_started_at IS NOT NULL` does and does not prove**: it proves the process reached
    * the line right before invoking the channel — nothing more. It does NOT prove the external
-   * SMTP send or webhook POST itself ever started (the process can still crash in the gap between
+   * SMTP send itself ever started (the process can still crash in the gap between
    * that write and the `channel.deliver()` call actually running), and it certainly does not prove
    * the external side effect completed. Counting that whole "reached the boundary, outcome
    * unknown" bucket as a real attempt is a deliberate, conservative choice: it costs retry budget
