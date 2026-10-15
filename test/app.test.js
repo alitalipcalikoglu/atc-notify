@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { NotifyApi } from '../src/app.js';
-import { API_KEY, emailBody, OTHER_KEY, silentLog, templates, testConfig, testEmailChannel, testPresence, testQueue } from './helpers.js';
+import { API_KEY, emailBody, OTHER_KEY, silentLog, templates, testConfig, testEmailChannel, testPresence, testQueue, testPolicy } from './helpers.js';
 
 const config = testConfig({ RATE_LIMIT_MAX: '50' });
 const queue = testQueue(config);
@@ -13,7 +13,7 @@ const auth = { authorization: `Bearer ${API_KEY}` };
 
 before(async () => {
   const { channel } = testEmailChannel(config);
-  app = await new NotifyApi({ config, queue, presence, templates, channels: [channel], version: '1.0.0', logger: silentLog }).build();
+  app = await new NotifyApi({ config, queue, ...testPolicy(config, queue), presence, templates, channels: [channel], version: '1.0.0', logger: silentLog }).build();
   await app.ready();
 });
 after(() => app.close());
@@ -154,7 +154,7 @@ test('GET /v1/info reports service identity and real, currently-enabled capabili
   assert.equal(body.service, 'atc-notify');
   assert.equal(body.version, '1.0.0');
   assert.equal(body.apiVersion, 'v1');
-  assert.deepEqual(body.capabilities, ['email', 'templates', 'idempotency'], 'only the channel actually wired into this app instance');
+  assert.deepEqual(body.capabilities, ['email', 'templates', 'idempotency', 'suppressions', 'send-quotas'], 'only the channel actually wired into this app instance');
   assert.equal(typeof body.schemaVersion, 'number');
   assert.equal(typeof body.serviceCore, 'string');
 });

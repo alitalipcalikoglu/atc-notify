@@ -82,7 +82,12 @@ Every `/v1` and `/metrics` request needs `Authorization: Bearer <secret>`. Error
 | GET | `/v1/messages/:id` | Delivery status. |
 | POST | `/v1/messages/:id/retry` | Re-queue a `failed` message. `409` for other states. |
 | GET | `/v1/templates` | Email templates with their JSON Schemas. |
-| GET | `/metrics` | Prometheus text: messages by status, oldest queued age, uptime. |
+| GET / POST | `/v1/suppressions` | Admin key. List (`q`, `limit`, `cursor`, totals per reason) or add `{ email, reason?, note? }`. |
+| GET / DELETE | `/v1/suppressions/:email` | Admin key. Look up; allow mail again. |
+| POST | `/v1/suppressions/events` | Admin key. Bounce and complaint reports `{ events: [{ type, email, permanent?, detail? }] }`. |
+| POST | `/v1/hooks/bounces` | Same reports from a provider or relay, signed with `BOUNCE_WEBHOOK_SECRET` (`X-Notify-Signature`). No API key. |
+| GET / POST | `/v1/unsubscribe/:token` | One-click unsubscribe link (RFC 8058). GET shows a form, POST suppresses. No API key. |
+| GET | `/metrics` | Prometheus text: messages by status, oldest queued age, suppressions by reason, uptime. |
 
 ### Email
 
@@ -133,7 +138,8 @@ Class-based; dependencies are injected through constructors, `src/application.js
 
 - **At-least-once delivery, not exactly-once.** If the SMTP server accepts a message but this process dies before the message's local `sent` state commits, the message is retried and the same email can reach the same inbox twice. SMTP gives no server-side dedup mechanism to attach to, so this service cannot prevent it on its own. `X-Notify-Id` (the message's own id, identical across every retry) is included in the mail headers for a downstream mail-processing pipeline that chooses to read it, but nothing in the SMTP protocol itself dedupes on it. (`idempotencyKey`, above, is a separate, caller-facing concept: it dedupes repeat `POST /v1/messages` calls before a message is ever queued.)
 - API secrets are compared in constant time; every configured key is checked so timing does not reveal which one matched.
-- Rate limit per API key (`RATE_LIMIT_MAX` per minute).
+- Rate limit per API key (`RATE_LIMIT_MAX` per minute) and send quotas that bound a stolen key: `DAILY_SEND_LIMIT` (recipients per key per UTC day, `KEY_DAILY_LIMIT=id=n` per key) and `RECIPIENT_HOURLY_LIMIT` (mails per address per hour, default 20); `429 QUOTA_EXCEEDED` with `Retry-After`.
+- Suppression list: hard bounces and complaints suppress an address at once, soft bounces after `SOFT_BOUNCE_LIMIT`; unsubscribes and manual entries too. Suppressed addresses are removed at acceptance (`422 RECIPIENTS_SUPPRESSED` when no `to` is left) and again right before sending. The bounce hook is HMAC-signed with a five-minute window; unsubscribe tokens are HMACs of the address, and a GET never unsubscribes (link scanners).
 - Template data is escaped on output; button URLs must be `http(s)`; subjects are collapsed to one line to prevent header injection.
 - Request bodies are capped at `BODY_LIMIT` bytes; unknown fields are rejected.
 - Template `data` is never returned by the API (it may contain personal data). Logs redact `Authorization`.
@@ -143,6 +149,7 @@ Class-based; dependencies are injected through constructors, `src/application.js
 
 - SMS and push channels: these need a provider account; add a channel module next to `src/channels/` when one is chosen.
 - Attachments: the service sends templated messages only. Send a link instead.
+- Provider-specific bounce formats (SES/SNS, SendGrid, Postmark, …): the hook takes one neutral format; translate in a small relay or post through `POST /v1/suppressions/events`.
 - True multi-host distribution: every process (API or worker, however many) must reach the same `DB_PATH` file on one host — there is no network-shared queue. Move to a server database if you need horizontal scaling across hosts.
 
 ## Audit events

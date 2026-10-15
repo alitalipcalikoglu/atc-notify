@@ -16,6 +16,8 @@ security:
 tags:
   - name: messages
     description: Queued email messages and their delivery status.
+  - name: suppressions
+    description: Addresses that get no mail (bounces, complaints, unsubscribes, manual), bounce reports and one-click unsubscribe.
   - name: templates
     description: Email templates bundled with this service.
   - name: operations
@@ -139,6 +141,14 @@ paths:
         automatic); there is no cancel/abort endpoint. Automatic retries use exponential backoff
         with jitter (`BACKOFF_BASE_MS`, default 5000ms; `BACKOFF_CAP_MS`, default 3600000ms) up to
         `MAX_ATTEMPTS` attempts (default 8) before a message is settled as `failed`.
+
+        **Suppressions**: suppressed addresses are removed from `to`/`cc`/`bcc` and listed in the
+        response's `suppressed`; when no `to` address is left the answer is `422 RECIPIENTS_SUPPRESSED`.
+        The worker checks again right before sending.
+
+        **Quotas**: `DAILY_SEND_LIMIT` / `KEY_DAILY_LIMIT` (recipients per key per UTC day) and
+        `RECIPIENT_HOURLY_LIMIT` (mails per address per hour, default 20) answer `429 QUOTA_EXCEEDED`
+        with `retry-after` and `details[0].scope` (`key` or `recipient`). Idempotent replays do not count.
       tags: [messages]
       requestBody:
         required: true
@@ -180,6 +190,18 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '`FORBIDDEN` — a `read` key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '422':
+          description: '`RECIPIENTS_SUPPRESSED` — every `to` address is on the suppression list; `details[].email` names them.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '409':
           description: '`IDEMPOTENCY_CONFLICT` — `idempotencyKey` was already used by this API key with a different channel or payload.'
           content:
@@ -332,6 +354,140 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/InternalError'
+
+  /v1/suppressions:
+    get:
+      operationId: atc-notify.suppressions.list
+      summary: List suppressed addresses (admin key)
+      tags: [suppressions]
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: string, pattern: '^([1-9]|[1-9][0-9]|1[0-9][0-9]|200)$' } }
+        - { name: cursor, in: query, required: false, schema: { type: string, maxLength: 512 } }
+        - { name: q, in: query, required: false, description: Part of the address., schema: { type: string, maxLength: 254 } }
+      responses:
+        '200':
+          description: Newest first, with the totals per reason.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor, counts]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Suppression' } }
+                  nextCursor: { type: [string, 'null'] }
+                  counts: { type: object, additionalProperties: { type: integer } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: '`FORBIDDEN` — not an admin key.', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    post:
+      operationId: atc-notify.suppressions.create
+      summary: Suppress an address (admin key)
+      tags: [suppressions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                reason: { type: string, enum: [hard_bounce, complaint, soft_bounce, unsubscribe, manual], description: Default `manual`. }
+                note: { type: string, maxLength: 500 }
+      responses:
+        '201':
+          description: Suppressed (an existing entry is replaced).
+          content: { application/json: { schema: { type: object, required: [suppression], properties: { suppression: { $ref: '#/components/schemas/Suppression' } } } } }
+        '400': { description: VALIDATION_FAILED., content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: '`FORBIDDEN` — not an admin key.', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/suppressions/{email}:
+    parameters:
+      - { name: email, in: path, required: true, schema: { type: string, format: email } }
+    get:
+      operationId: atc-notify.suppressions.get
+      summary: Is this address suppressed? (admin key)
+      tags: [suppressions]
+      responses:
+        '200':
+          description: Suppressed.
+          content: { application/json: { schema: { type: object, required: [suppression], properties: { suppression: { $ref: '#/components/schemas/Suppression' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: '`FORBIDDEN` — not an admin key.', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: atc-notify.suppressions.delete
+      summary: Allow mail to an address again (admin key)
+      tags: [suppressions]
+      responses:
+        '204': { description: Removed. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: '`FORBIDDEN` — not an admin key.', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/suppressions/events:
+    post:
+      operationId: atc-notify.suppressions.report
+      summary: Report bounces and complaints (admin key)
+      description: The same input as the signed hook, for a relay that holds an admin key. Hard bounces and complaints suppress at once; soft bounces after `SOFT_BOUNCE_LIMIT` (default 3).
+      tags: [suppressions]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/BounceEvents' } } }
+      responses:
+        '200':
+          description: How many events arrived and how many suppressed an address.
+          content: { application/json: { schema: { $ref: '#/components/schemas/BounceResult' } } }
+        '400': { description: VALIDATION_FAILED., content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: '`FORBIDDEN` — not an admin key.', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+
+  /v1/hooks/bounces:
+    post:
+      operationId: atc-notify.hooks.bounces
+      summary: Signed bounce and complaint hook (no API key)
+      description: >-
+        For a mail provider, or a small relay that translates its format. Header
+        `X-Notify-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw body>" with BOUNCE_WEBHOOK_SECRET>`,
+        at most five minutes old. `404` while `BOUNCE_WEBHOOK_SECRET` is not set.
+      tags: [suppressions]
+      security: []
+      parameters:
+        - { name: x-notify-signature, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/BounceEvents' } } }
+      responses:
+        '200':
+          description: Processed.
+          content: { application/json: { schema: { $ref: '#/components/schemas/BounceResult' } } }
+        '400': { description: VALIDATION_FAILED., content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+        '401': { description: INVALID_SIGNATURE., content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/unsubscribe/{token}:
+    parameters:
+      - { name: token, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: atc-notify.unsubscribe.page
+      summary: Unsubscribe page behind the List-Unsubscribe link (no API key)
+      description: Shows a confirmation form and changes nothing, so link scanners cannot unsubscribe anyone.
+      tags: [suppressions]
+      security: []
+      responses:
+        '200': { description: HTML page., content: { text/html: { schema: { type: string } } } }
+        '404': { description: HTML page; the token was not issued here., content: { text/html: { schema: { type: string } } } }
+    post:
+      operationId: atc-notify.unsubscribe.confirm
+      summary: One-click unsubscribe (RFC 8058; no API key)
+      tags: [suppressions]
+      security: []
+      responses:
+        '200': { description: HTML page; the address is suppressed with reason `unsubscribe`., content: { text/html: { schema: { type: string } } } }
+        '404': { description: HTML page; the token was not issued here., content: { text/html: { schema: { type: string } } } }
 
   /v1/templates:
     get:
@@ -595,6 +751,46 @@ components:
         sentAt:
           type: [string, 'null']
           format: date-time
+        suppressed:
+          type: array
+          items: { type: string }
+          description: Only on `POST /v1/messages`, when suppressed addresses were left out.
+
+    Suppression:
+      type: object
+      required: [email, reason, source, note, createdAt]
+      properties:
+        email: { type: string, format: email }
+        reason: { type: string, enum: [hard_bounce, complaint, soft_bounce, unsubscribe, manual] }
+        source: { type: string, description: '`key:<id>` for API calls, `hook` for the signed bounce hook, `link` for unsubscribes.' }
+        note: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+
+    BounceEvents:
+      type: object
+      additionalProperties: false
+      required: [events]
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: object
+            additionalProperties: false
+            required: [type, email]
+            properties:
+              type: { type: string, enum: [bounce, complaint] }
+              email: { type: string, format: email }
+              permanent: { type: boolean, description: 'Hard bounce (default true). A soft bounce suppresses after `SOFT_BOUNCE_LIMIT`.' }
+              detail: { type: string, maxLength: 1000 }
+
+    BounceResult:
+      type: object
+      required: [received, suppressed]
+      properties:
+        received: { type: integer }
+        suppressed: { type: integer }
 
     MessageList:
       type: object
@@ -632,6 +828,9 @@ components:
           type: string
           format: email
           maxLength: 254
+        unsubscribe:
+          type: boolean
+          description: 'Add one-click `List-Unsubscribe` headers (RFC 8058). Needs `PUBLIC_BASE_URL` + `UNSUBSCRIBE_SECRET`, exactly one `to` and no cc/bcc (`400` otherwise). Use for newsletters, not for account mail.'
         data:
           type: object
           description: >-

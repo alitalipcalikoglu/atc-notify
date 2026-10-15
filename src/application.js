@@ -10,6 +10,9 @@ import { HeartbeatStore } from './heartbeat-store.js';
 import { Backoff, Queue } from './queue.js';
 import { TemplateRegistry } from './templates/registry.js';
 import { Worker } from './worker.js';
+import { SendQuota } from './send-quota.js';
+import { SuppressionStore } from './suppressions.js';
+import { UnsubscribeLinks } from './unsubscribe.js';
 
 /** @typedef {'combined'|'api'|'worker'} Role */
 
@@ -41,7 +44,10 @@ export class Application {
       backoff: new Backoff(config.backoffBaseMs, config.backoffCapMs),
     });
     this.templates = TemplateRegistry.withDefaults();
-    this.channels = [new EmailChannel({ templates: this.templates, from: config.smtpFrom, smtpUrl: config.smtpUrl })];
+    this.suppressions = new SuppressionStore(this.db, { softBounceLimit: config.softBounceLimit });
+    this.quota = new SendQuota(this.db, { dailyDefault: config.dailySendLimit, perKey: config.keyDailyLimits, recipientHourly: config.recipientHourlyLimit });
+    this.unsubscribe = config.unsubscribe ? new UnsubscribeLinks(config.unsubscribe) : null;
+    this.channels = [new EmailChannel({ templates: this.templates, from: config.smtpFrom, smtpUrl: config.smtpUrl, unsubscribe: this.unsubscribe })];
     /** @type {import('fastify').FastifyInstance|null} */
     this.app = null;
     /** @type {Worker|null} */
@@ -85,6 +91,8 @@ export class Application {
         queue: this.queue,
         presence: this.presence,
         channels: this.channels,
+        suppressions: this.suppressions,
+        quota: this.quota,
         log: log.child({ component: 'worker' }),
         options: { concurrency: config.workerConcurrency, pollMs: config.workerPollMs, retentionDays: config.retentionDays, heartbeatMs: config.heartbeatMs, drainMs },
       });
@@ -94,7 +102,7 @@ export class Application {
     const steps = [];
 
     if (runsApi) {
-      const api = new NotifyApi({ config, audit: this.audit, queue: this.queue, presence: this.presence, templates: this.templates, channels: this.channels, version: this.version });
+      const api = new NotifyApi({ config, audit: this.audit, queue: this.queue, presence: this.presence, templates: this.templates, channels: this.channels, suppressions: this.suppressions, quota: this.quota, unsubscribe: this.unsubscribe, version: this.version });
       const app = await api.build();
       this.app = app;
       log = app.log;

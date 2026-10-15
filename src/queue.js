@@ -162,6 +162,11 @@ export class Queue {
     return { row: existing, created: false };
   }
 
+  /** The message an idempotency key already created, if any. @param {string} apiKeyId @param {string} key @returns {MessageRow|undefined} */
+  findIdempotent(apiKeyId, key) {
+    return /** @type {MessageRow|undefined} */ (this.stmt.byIdempotency.get(apiKeyId, key));
+  }
+
   /**
    * Atomically move up to `limit` due messages to `processing`, all under one fresh `owner_token`,
    * and return them.

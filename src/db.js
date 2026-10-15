@@ -56,5 +56,28 @@ export class Database extends CoreDatabase {
     -- a deliberate, conservative choice, not a claim that delivery definitely started.
     ALTER TABLE messages ADD COLUMN call_started_at INTEGER;
     `,
+    `
+    -- Addresses no mail goes to (hard bounces, complaints, repeated soft bounces, unsubscribes,
+    -- manual entries), soft-bounce counters, and per-day / per-hour send counters for the quotas.
+    CREATE TABLE suppressions (
+      email       TEXT PRIMARY KEY,
+      reason      TEXT NOT NULL CHECK (reason IN ('hard_bounce', 'complaint', 'soft_bounce', 'unsubscribe', 'manual')),
+      source      TEXT NOT NULL,
+      note        TEXT,
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX suppressions_created ON suppressions (created_at DESC, email);
+    CREATE TABLE soft_bounces (
+      email    TEXT PRIMARY KEY,
+      count    INTEGER NOT NULL,
+      last_at  INTEGER NOT NULL
+    );
+    CREATE TABLE send_counts (
+      scope   TEXT NOT NULL,
+      bucket  INTEGER NOT NULL,
+      n       INTEGER NOT NULL,
+      PRIMARY KEY (scope, bucket)
+    );
+    `,
   ];
 }

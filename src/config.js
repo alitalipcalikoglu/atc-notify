@@ -43,6 +43,12 @@ export class Config {
     this.heartbeatMs = values.heartbeatMs;
     this.retentionDays = values.retentionDays;
     this.rateLimitMax = values.rateLimitMax;
+    this.bounceWebhookSecret = values.bounceWebhookSecret;
+    this.softBounceLimit = values.softBounceLimit;
+    this.dailySendLimit = values.dailySendLimit;
+    this.keyDailyLimits = values.keyDailyLimits;
+    this.recipientHourlyLimit = values.recipientHourlyLimit;
+    this.unsubscribe = values.unsubscribe;
     Object.freeze(this);
   }
 
@@ -89,6 +95,23 @@ export class Config {
     const heartbeatMs = r.integer('HEARTBEAT_MS', 10_000, { min: 250 });
     if (heartbeatMs >= lockTtlMs) throw new ConfigError('HEARTBEAT_MS must be less than LOCK_TTL_MS');
 
+    const apiKeys = Config.#parseApiKeys(r.required('NOTIFY_API_KEYS'));
+    const bounceWebhookSecret = r.optional('BOUNCE_WEBHOOK_SECRET') || null;
+    if (bounceWebhookSecret && bounceWebhookSecret.length < Config.MIN_SECRET_LENGTH) throw new ConfigError(`BOUNCE_WEBHOOK_SECRET must be at least ${Config.MIN_SECRET_LENGTH} characters`);
+    /** @type {Record<string, number>} */
+    const keyDailyLimits = {};
+    for (const part of (r.optional('KEY_DAILY_LIMIT') || '').split(',').map((x) => x.trim()).filter(Boolean)) {
+      const m = /^([^=\s]+)=(\d{1,9})$/.exec(part);
+      if (!m) throw new ConfigError(`KEY_DAILY_LIMIT entry "${part}" must look like keyId=number`);
+      if (!apiKeys.some((k) => k.id === m[1])) throw new ConfigError(`KEY_DAILY_LIMIT names "${m[1]}", which is not a key in NOTIFY_API_KEYS`);
+      keyDailyLimits[m[1]] = Number(m[2]);
+    }
+    const publicBaseUrl = (r.optional('PUBLIC_BASE_URL') || '').replace(/\/+$/, '');
+    const unsubscribeSecret = r.optional('UNSUBSCRIBE_SECRET');
+    if (Boolean(publicBaseUrl) !== Boolean(unsubscribeSecret)) throw new ConfigError('PUBLIC_BASE_URL and UNSUBSCRIBE_SECRET must be set together');
+    if (publicBaseUrl && !/^https?:\/\/[^\s/]+(\/[^\s]*)?$/.test(publicBaseUrl)) throw new ConfigError('PUBLIC_BASE_URL must be an absolute http(s) URL');
+    if (unsubscribeSecret && unsubscribeSecret.length < Config.MIN_SECRET_LENGTH) throw new ConfigError(`UNSUBSCRIBE_SECRET must be at least ${Config.MIN_SECRET_LENGTH} characters`);
+
     return new Config({
       port: r.integer('PORT', 3001, { min: 1, max: 65535 }),
       host: r.optional('HOST') || '0.0.0.0',
@@ -99,7 +122,7 @@ export class Config {
       bodyLimit: r.integer('BODY_LIMIT', 65_536, { min: 1_024 }),
       dbPath: r.optional('DB_PATH') || './data/notify.db',
       dbBackupDir: r.optional('DB_BACKUP_DIR') || undefined,
-      apiKeys: Config.#parseApiKeys(r.required('NOTIFY_API_KEYS')),
+      apiKeys,
       smtpUrl,
       smtpFrom,
       maxAttempts: r.integer('MAX_ATTEMPTS', 8, { min: 1, max: 50 }),
@@ -111,6 +134,12 @@ export class Config {
       heartbeatMs,
       retentionDays: r.integer('RETENTION_DAYS', 30, { min: 1 }),
       rateLimitMax: r.integer('RATE_LIMIT_MAX', 600, { min: 1 }),
+      bounceWebhookSecret,
+      softBounceLimit: r.integer('SOFT_BOUNCE_LIMIT', 3, { min: 1, max: 100 }),
+      dailySendLimit: r.integer('DAILY_SEND_LIMIT', 0, { min: 0 }),
+      keyDailyLimits,
+      recipientHourlyLimit: r.integer('RECIPIENT_HOURLY_LIMIT', 20, { min: 0 }),
+      unsubscribe: publicBaseUrl ? { secret: /** @type {string} */ (unsubscribeSecret), baseUrl: publicBaseUrl } : null,
     });
   }
 

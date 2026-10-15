@@ -17,6 +17,10 @@ One event per completed write request, `outcome: "success"` for 2xx, `outcome: "
 |---|---|
 | `atc-notify.message.create` | `POST /v1/messages` |
 | `atc-notify.message.retry` | `POST /v1/messages/:id/retry` |
+| `atc-notify.suppression.create` | `POST /v1/suppressions` |
+| `atc-notify.suppression.delete` | `DELETE /v1/suppressions/:email` |
+| `atc-notify.suppression.report` | `POST /v1/suppressions/events` |
+| `atc-notify.suppression.unsubscribe` | `POST /v1/unsubscribe/:token` (no key; actor is the caller address) |
 
 ## Event shape
 

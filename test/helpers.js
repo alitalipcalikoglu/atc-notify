@@ -4,6 +4,9 @@ import { Config } from '../src/config.js';
 import { Database } from '../src/db.js';
 import { HeartbeatStore } from '../src/heartbeat-store.js';
 import { Backoff, Queue } from '../src/queue.js';
+import { SendQuota } from '../src/send-quota.js';
+import { SuppressionStore } from '../src/suppressions.js';
+import { UnsubscribeLinks } from '../src/unsubscribe.js';
 import { TemplateRegistry } from '../src/templates/registry.js';
 
 export const API_KEY = 'k'.repeat(40);
@@ -65,14 +68,15 @@ export const templates = TemplateRegistry.withDefaults();
 /**
  * Email channel with a recording transport.
  * @param {Config} config
- * @param {{ fail?: unknown }} [opts]  Throw `fail` from sendMail instead of recording.
+ * @param {{ fail?: unknown, unsubscribe?: UnsubscribeLinks|null }} [opts]  Throw `fail` from sendMail instead of recording.
  */
-export function testEmailChannel(config, { fail } = {}) {
+export function testEmailChannel(config, { fail, unsubscribe = null } = {}) {
   /** @type {import('nodemailer').SendMailOptions[]} */
   const sent = [];
   const channel = new EmailChannel({
     templates,
     from: config.smtpFrom,
+    unsubscribe,
     transport: {
       async sendMail(msg) {
         if (fail) throw fail;
@@ -98,3 +102,18 @@ export const emailBody = {
   to: ['a@example.com'],
   data: { appName: 'Shop', subject: 'Hi', title: 'Hello', paragraphs: ['Line one'] },
 };
+
+/** Suppressions, quotas and unsubscribe links over the queue's own database. @param {Config} config @param {Queue} queue */
+export function testPolicy(config, queue) {
+  return {
+    suppressions: new SuppressionStore(queue.db, { softBounceLimit: config.softBounceLimit }),
+    quota: new SendQuota(queue.db, { dailyDefault: config.dailySendLimit, perKey: config.keyDailyLimits, recipientHourly: config.recipientHourlyLimit }),
+    unsubscribe: config.unsubscribe ? new UnsubscribeLinks(config.unsubscribe) : null,
+  };
+}
+
+/** A queue and its policy objects. @param {Config} config */
+export function testDeps(config) {
+  const queue = testQueue(config);
+  return { queue, ...testPolicy(config, queue) };
+}

@@ -6,6 +6,7 @@ import { registerInfo, registerOpenApi, registerProbes, registerRequestContext, 
 import { ApiKeyAuth } from './auth.js';
 import { IdempotencyConflictError, InvalidCursorError } from './queue.js';
 import { AuditMetrics } from './audit-metrics.js';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 /** @typedef {import('./config.js').Config} Config */
 /** @typedef {import('./types.js').MessageRow} MessageRow */
@@ -65,6 +66,7 @@ class Schemas {
         bcc: Schemas.emailList(10),
         replyTo: Schemas.email,
         data: { type: 'object' },
+        unsubscribe: { type: 'boolean' },
         idempotencyKey: Schemas.idempotencyKey,
       },
     };
@@ -99,8 +101,15 @@ class Schemas {
       createdAt: { type: 'string' },
       updatedAt: { type: 'string' },
       sentAt: { type: 'string', nullable: true },
+      suppressed: { type: 'array', items: { type: 'string' } },
     },
   };
+
+  static suppressionReason = { type: 'string', enum: ['hard_bounce', 'complaint', 'soft_bounce', 'unsubscribe', 'manual'] };
+  static addSuppression = { type: 'object', additionalProperties: false, required: ['email'], properties: { email: Schemas.email, reason: Schemas.suppressionReason, note: { type: 'string', maxLength: 500 } } };
+  static bounceEvents = { type: 'object', additionalProperties: false, required: ['events'], properties: { events: { type: 'array', minItems: 1, maxItems: 500, items: { type: 'object', additionalProperties: false, required: ['type', 'email'], properties: { type: { type: 'string', enum: ['bounce', 'complaint'] }, email: Schemas.email, permanent: { type: 'boolean' }, detail: { type: 'string', maxLength: 1000 } } } } } };
+  static suppressionList = { type: 'object', additionalProperties: false, properties: { limit: { type: 'string', pattern: '^([1-9]|[1-9][0-9]|1[0-9][0-9]|200)$' }, cursor: { type: 'string', maxLength: 512 }, q: { type: 'string', maxLength: 254 } } };
+  static emailParams = { type: 'object', properties: { email: Schemas.email }, required: ['email'] };
 
   static error = {
     type: 'object',
@@ -135,8 +144,14 @@ export class NotifyApi {
    * @param {string} deps.version
    * @param {import('./types.js').Logger} [deps.logger]
    * @param {import('@atc-web/atc-service-core/audit').AuditClient} [deps.audit]
+   * @param {import('./suppressions.js').SuppressionStore} deps.suppressions
+   * @param {import('./send-quota.js').SendQuota} deps.quota
+   * @param {import('./unsubscribe.js').UnsubscribeLinks|null} [deps.unsubscribe]
    */
-  constructor({ config, audit, queue, presence, templates, channels, version, logger }) {
+  constructor({ config, audit, queue, presence, templates, channels, suppressions, quota, unsubscribe = null, version, logger }) {
+    this.suppressions = suppressions;
+    this.quota = quota;
+    this.unsubscribe = unsubscribe;
     this.config = config;
     this.audit = audit;
     this.queue = queue;
@@ -182,9 +197,10 @@ export class NotifyApi {
     registerInfo(app, {
       service: 'atc-notify',
       version: this.version,
-      capabilities: [...this.channels.map((ch) => ch.name), 'templates', 'idempotency'],
+      capabilities: [...this.channels.map((ch) => ch.name), 'templates', 'idempotency', 'suppressions', 'send-quotas', ...(this.unsubscribe ? ['one-click-unsubscribe'] : [])],
       schemaVersion: this.queue.db.schemaVersion,
     });
+    await app.register((pub) => this.#registerPublic(pub));
     await app.register((api) => this.#registerV1(api), { prefix: '/v1' });
     await app.register((ops) => this.#registerMetrics(ops));
     return app;
@@ -243,7 +259,99 @@ export class NotifyApi {
       schema: { params: Schemas.idParams, response: { 200: Schemas.message, 404: Schemas.error, 409: Schemas.error } },
     }, this.#retryMessage);
     api.get('/templates', async () => ({ items: this.templates.describe() }));
+
+    // ---- suppressions (admin keys)
+    const admin = { preHandler: this.#needAdmin };
+    const target = (/** @type {any} */ r, /** @type {any} */ b) => ({ type: 'suppression', id: b?.suppression?.email ?? r.params?.email ?? r.body?.email ?? '' });
+    api.get('/suppressions', { ...admin, schema: { querystring: Schemas.suppressionList } }, async (request) => {
+      const q = /** @type {{ limit?: string, cursor?: string, q?: string }} */ (request.query);
+      const r = this.suppressions.list({ limit: q.limit ? Number(q.limit) : 50, cursor: q.cursor, q: q.q });
+      return { items: r.items.map(NotifyApi.#suppressionView), nextCursor: r.nextCursor, counts: this.suppressions.counts() };
+    });
+    api.get('/suppressions/:email', { ...admin, schema: { params: Schemas.emailParams } }, async (request, reply) => {
+      const row = this.suppressions.get(/** @type {{ email: string }} */ (request.params).email);
+      if (!row) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'address is not suppressed' } });
+      return { suppression: NotifyApi.#suppressionView(row) };
+    });
+    api.post('/suppressions', { ...admin, config: { audit: AuditClient.route('atc-notify.suppression.create', target, (r) => ({ reason: /** @type {any} */ (r.body).reason ?? 'manual' })) }, schema: { body: Schemas.addSuppression } }, async (request, reply) => {
+      const b = /** @type {{ email: string, reason?: any, note?: string }} */ (request.body);
+      const row = this.suppressions.add({ email: b.email, reason: b.reason ?? 'manual', source: `key:${request.apiKeyId}`, note: b.note ?? null });
+      return reply.code(201).send({ suppression: NotifyApi.#suppressionView(row) });
+    });
+    api.delete('/suppressions/:email', { ...admin, config: { audit: AuditClient.route('atc-notify.suppression.delete', target) }, schema: { params: Schemas.emailParams } }, async (request, reply) => {
+      if (!this.suppressions.remove(/** @type {{ email: string }} */ (request.params).email)) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'address is not suppressed' } });
+      return reply.code(204).send();
+    });
+    api.post('/suppressions/events', { ...admin, config: { audit: AuditClient.route('atc-notify.suppression.report', () => ({ type: 'suppression', id: 'events' }), (_r, b) => ({ suppressed: b?.suppressed })) }, schema: { body: Schemas.bounceEvents } }, async (request) => this.#report(/** @type {any} */ (request.body).events, `key:${request.apiKeyId}`));
   }
+
+  /** @param {import('./suppressions.js').SuppressionRow} r */
+  static #suppressionView(r) {
+    return { email: r.email, reason: r.reason, source: r.source, note: r.note, createdAt: new Date(r.created_at).toISOString() };
+  }
+
+  /** @param {{ type: 'bounce'|'complaint', email: string, permanent?: boolean, detail?: string }[]} events @param {string} source */
+  #report(events, source) {
+    let suppressed = 0;
+    for (const e of events) if (this.suppressions.report(e, source)) suppressed++;
+    return { received: events.length, suppressed };
+  }
+
+  /**
+   * Routes without an API key: the signed bounce hook for a mail provider (or a relay that
+   * translates its format) and the one-click unsubscribe link.
+   * @param {import('fastify').FastifyInstance} pub
+   */
+  async #registerPublic(pub) {
+    pub.removeAllContentTypeParsers();
+    pub.addContentTypeParser('*', { parseAs: 'string', bodyLimit: 1_048_576 }, (_request, body, done) => done(null, body));
+    await pub.register(rateLimit, { max: 120, timeWindow: '1 minute', errorResponseBuilder: (_r, c) => Object.assign(new Error(`rate limit exceeded, retry in ${c.after}`), { statusCode: 429, code: 'RATE_LIMITED' }) });
+    pub.post('/v1/hooks/bounces', async (request, reply) => {
+      const secret = this.config.bounceWebhookSecret;
+      if (!secret) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'route not found' } });
+      const raw = typeof request.body === 'string' ? request.body : '';
+      if (!NotifyApi.verifySignature(secret, raw, String(request.headers['x-notify-signature'] ?? ''), Date.now())) {
+        return reply.code(401).send({ error: { code: 'INVALID_SIGNATURE', message: 'signature missing, wrong or too old' } });
+      }
+      /** @type {any} */ let body;
+      try { body = JSON.parse(raw); } catch { return reply.code(400).send({ error: { code: 'VALIDATION_FAILED', message: 'body is not JSON' } }); }
+      const ok = Array.isArray(body?.events) && body.events.length <= 500 && body.events.every((/** @type {any} */ e) => (e?.type === 'bounce' || e?.type === 'complaint') && typeof e.email === 'string' && /^[^\s@]+@[^\s@]+$/.test(e.email) && e.email.length <= 254);
+      if (!ok) return reply.code(400).send({ error: { code: 'VALIDATION_FAILED', message: 'expected { events: [{ type: "bounce"|"complaint", email, permanent?, detail? }] }' } });
+      return this.#report(body.events.map((/** @type {any} */ e) => ({ type: e.type, email: e.email, permanent: e.permanent !== false, detail: typeof e.detail === 'string' ? e.detail : undefined })), 'hook');
+    });
+    const unsubscribePage = (/** @type {string} */ title, /** @type {string} */ text, /** @type {string} */ form = '') => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title><style>body{font:16px system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#111}button{font:inherit;padding:.6rem 1.2rem}</style></head><body><h1>${title}</h1><p>${text}</p>${form}</body></html>`;
+    pub.get('/v1/unsubscribe/:token', async (request, reply) => {
+      const email = this.unsubscribe?.verify(/** @type {{ token: string }} */ (request.params).token);
+      reply.type('text/html; charset=utf-8').header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'");
+      if (!email) return reply.code(404).send(unsubscribePage('Link not valid', 'This unsubscribe link is not valid.'));
+      return unsubscribePage('Unsubscribe', 'Stop all mail from this sender to this address?', '<form method="post"><button type="submit">Unsubscribe</button></form>');
+    });
+    pub.post('/v1/unsubscribe/:token', { config: { audit: AuditClient.route('atc-notify.suppression.unsubscribe', () => ({ type: 'suppression', id: 'unsubscribe' })) } }, async (request, reply) => {
+      const email = this.unsubscribe?.verify(/** @type {{ token: string }} */ (request.params).token);
+      reply.type('text/html; charset=utf-8').header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'");
+      if (!email) return reply.code(404).send(unsubscribePage('Link not valid', 'This unsubscribe link is not valid.'));
+      if (!this.suppressions.get(email)) this.suppressions.add({ email, reason: 'unsubscribe', source: 'link' });
+      return unsubscribePage('Unsubscribed', 'This address will not get mail from this sender any more.');
+    });
+  }
+
+  /**
+   * `X-Notify-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">`, at most five minutes old.
+   * @param {string} secret @param {string} body @param {string} header @param {number} nowMs
+   */
+  static verifySignature(secret, body, header, nowMs) {
+    const parts = Object.fromEntries(header.split(',').map((p) => p.trim().split('=')));
+    const t = Number(parts.t);
+    if (!Number.isInteger(t) || Math.abs(nowMs / 1000 - t) > 300 || typeof parts.v1 !== 'string') return false;
+    const expected = Buffer.from(createHmac('sha256', secret).update(`${t}.${body}`).digest('hex'));
+    const got = Buffer.from(parts.v1);
+    return expected.length === got.length && timingSafeEqual(expected, got);
+  }
+
+  /** Suppression management needs an `admin` key. */
+  #needAdmin = async (/** @type {import('fastify').FastifyRequest} */ request) => {
+    if (request.apiKeyRole !== 'admin') throw Object.assign(new Error('this needs an admin key'), { statusCode: 403, code: 'FORBIDDEN' });
+  };
 
   /**
    * Per-template validators for the `data` field, compiled with Fastify's own Ajv once it exists.
@@ -282,10 +390,40 @@ export class NotifyApi {
         },
       });
     }
-    const { row, created } = this.queue.enqueue({ apiKeyId: request.apiKeyId, idempotencyKey, channel: payload.channel, payload });
-    request.log.info({ messageId: row.id, channel: row.channel, created }, created ? 'message queued' : 'idempotent replay');
+    if (payload.unsubscribe) {
+      if (!this.unsubscribe) return reply.code(400).send({ error: { code: 'UNSUBSCRIBE_UNAVAILABLE', message: 'one-click unsubscribe needs PUBLIC_BASE_URL and UNSUBSCRIBE_SECRET' } });
+      if (payload.to.length !== 1 || payload.cc?.length || payload.bcc?.length) return reply.code(400).send({ error: { code: 'VALIDATION_FAILED', message: 'unsubscribe links need exactly one "to" and no cc/bcc' } });
+    }
+    /** @type {string[]} */
+    const suppressed = [];
+    for (const field of /** @type {const} */ (['to', 'cc', 'bcc'])) {
+      if (!payload[field]) continue;
+      const p = this.suppressions.partition(payload[field]);
+      suppressed.push(...p.suppressed);
+      payload[field] = p.allowed;
+      if (!payload[field].length && field !== 'to') delete payload[field];
+    }
+    if (!payload.to.length) return reply.code(422).send({ error: { code: 'RECIPIENTS_SUPPRESSED', message: 'every "to" address is suppressed', details: suppressed.map((email) => ({ email })) } });
+    // A replay (same key, same payload after the same suppression filter) is answered before the quota is looked at.
+    if (idempotencyKey && this.queue.findIdempotent(request.apiKeyId, idempotencyKey)) {
+      const { row } = this.queue.enqueue({ apiKeyId: request.apiKeyId, idempotencyKey, channel: payload.channel, payload });
+      return reply.header('location', `/v1/messages/${row.id}`).code(200).send(MessageView.from(row));
+    }
+    const recipients = [...payload.to, ...(payload.cc ?? []), ...(payload.bcc ?? [])];
+    const now = Date.now();
+    const over = this.quota.check(request.apiKeyId, recipients, now);
+    if (over) {
+      reply.header('retry-after', String(over.retryAfterSec));
+      return reply.code(429).send({ error: { code: 'QUOTA_EXCEEDED', message: over.scope === 'key' ? `this key may send to ${over.limit} recipients per day` : `${over.recipient} may get ${over.limit} mails per hour`, details: [{ scope: over.scope, limit: over.limit, retryAfterSec: over.retryAfterSec }] } });
+    }
+    const { row, created } = this.queue.db.transaction(() => {
+      const r = this.queue.enqueue({ apiKeyId: request.apiKeyId, idempotencyKey, channel: payload.channel, payload }, now);
+      if (r.created) this.quota.record(request.apiKeyId, recipients, now);
+      return r;
+    });
+    request.log.info({ messageId: row.id, channel: row.channel, created, suppressed: suppressed.length }, created ? 'message queued' : 'idempotent replay');
     reply.header('location', `/v1/messages/${row.id}`);
-    return reply.code(created ? 202 : 200).send(MessageView.from(row));
+    return reply.code(created ? 202 : 200).send({ ...MessageView.from(row), ...(suppressed.length ? { suppressed } : {}) });
   };
 
   /** @type {import('fastify').RouteHandlerMethod} */
@@ -337,6 +475,9 @@ export class NotifyApi {
         '# HELP notify_worker_up 1 if a worker process is currently alive (this process itself, or another one reporting through worker_heartbeat), else 0.',
         '# TYPE notify_worker_up gauge',
         `notify_worker_up ${this.workerStatus() === 'running' ? 1 : 0}`,
+        '# HELP notify_suppressions Suppressed addresses by reason.',
+        '# TYPE notify_suppressions gauge',
+        ...Object.entries(this.suppressions.counts()).map(([k, v]) => `notify_suppressions{reason="${k}"} ${v}`),
         ...AuditMetrics.lines(this.audit),
         '# HELP notify_process_uptime_seconds Process uptime.',
         '# TYPE notify_process_uptime_seconds gauge',

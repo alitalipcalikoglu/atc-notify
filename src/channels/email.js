@@ -25,9 +25,11 @@ export class EmailChannel extends Channel {
    * @param {string} opts.from             Default From header.
    * @param {string} [opts.smtpUrl]        nodemailer URL (`smtps://user:pass@host:465`) or `json:` for the dev transport.
    * @param {MailTransport} [opts.transport]  Injected transport (tests). Takes precedence over `smtpUrl`.
+   * @param {import('../unsubscribe.js').UnsubscribeLinks|null} [opts.unsubscribe]  Builds `List-Unsubscribe` headers.
    */
-  constructor({ templates, from, smtpUrl, transport }) {
+  constructor({ templates, from, smtpUrl, transport, unsubscribe = null }) {
     super();
+    this.unsubscribe = unsubscribe;
     this.templates = templates;
     this.from = from;
     this.transport = transport ?? EmailChannel.createTransport(smtpUrl ?? 'json:');
@@ -71,7 +73,7 @@ export class EmailChannel extends Channel {
       subject: rendered.subject,
       html: rendered.html,
       text: rendered.text,
-      headers: { 'X-Notify-Id': messageId },
+      headers: { 'X-Notify-Id': messageId, ...(payload.unsubscribe && this.unsubscribe ? this.unsubscribe.headers(payload.to[0]) : {}) },
     });
     return info.messageId;
   }

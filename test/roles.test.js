@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { NotifyApi } from '../src/app.js';
 import { ConfigError } from '../src/config.js';
-import { API_KEY, emailBody, OTHER_KEY, silentLog, templates, testConfig, testEmailChannel, testPresence, testQueue } from './helpers.js';
+import { API_KEY, emailBody, OTHER_KEY, silentLog, templates, testConfig, testEmailChannel, testPresence, testQueue, testDeps } from './helpers.js';
 
 const READ_KEY = 'r'.repeat(40);
 const ADMIN_KEY = 'a'.repeat(40);
@@ -11,7 +11,7 @@ const bearer = (/** @type {string} */ k) => ({ authorization: `Bearer ${k}` });
 async function build() {
   const config = testConfig({ NOTIFY_API_KEYS: `test:${API_KEY},other:${OTHER_KEY},panel:${READ_KEY}:read,console:${ADMIN_KEY}:admin` });
   const { channel } = testEmailChannel(config);
-  const app = await new NotifyApi({ config, queue: testQueue(config), presence: testPresence(), templates, channels: [channel], version: '1.0.0', logger: silentLog }).build();
+  const app = await new NotifyApi({ config, ...testDeps(config), presence: testPresence(), templates, channels: [channel], version: '1.0.0', logger: silentLog }).build();
   await app.ready();
   return app;
 }

@@ -34,6 +34,12 @@
  * @property {number} heartbeatMs          How often an in-flight delivery's lock is renewed; must be < lockTtlMs.
  * @property {number} retentionDays
  * @property {number} rateLimitMax         Requests per minute per API key.
+ * @property {string|null} bounceWebhookSecret  Signs `POST /v1/hooks/bounces`; null = the hook is off.
+ * @property {number} softBounceLimit      Soft bounces before an address is suppressed.
+ * @property {number} dailySendLimit       Recipients per key per UTC day (0 = off), unless the key has its own.
+ * @property {Record<string, number>} keyDailyLimits
+ * @property {number} recipientHourlyLimit Mails per recipient per hour (0 = off).
+ * @property {{ secret: string, baseUrl: string }|null} unsubscribe  One-click unsubscribe links; null = off.
  */
 
 /** @typedef {import('./config.js').Config} Config */
@@ -71,6 +77,7 @@
  * @property {string[]} [bcc]
  * @property {string} [replyTo]
  * @property {Record<string, unknown>} data
+ * @property {boolean} [unsubscribe]  Add one-click `List-Unsubscribe` headers (single `to`, no cc/bcc).
  */
 
 /**

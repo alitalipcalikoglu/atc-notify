@@ -30,10 +30,14 @@ export class Worker {
    * @param {HeartbeatStore} deps.presence
    * @param {AnyChannel[]} deps.channels
    * @param {MinimalLogger} deps.log
+   * @param {import('./suppressions.js').SuppressionStore} [deps.suppressions]  Checked again right before sending.
+   * @param {import('./send-quota.js').SendQuota} [deps.quota]  Its counters are purged with the history.
    * @param {{ concurrency: number, pollMs: number, retentionDays: number, heartbeatMs: number, drainMs: number }} deps.options
    * @param {() => number} [deps.now]
    */
-  constructor({ queue, presence, channels, log, options, now = Date.now }) {
+  constructor({ queue, presence, channels, log, options, suppressions, quota, now = Date.now }) {
+    this.suppressions = suppressions ?? null;
+    this.quota = quota ?? null;
     this.queue = queue;
     this.presence = presence;
     this.channels = new Map(channels.map((c) => [c.name, c]));
@@ -170,13 +174,19 @@ export class Worker {
         this.log.warn(meta, 'lock lost before the delivery-attempt boundary; not sending, another worker already reclaimed it');
         return;
       }
-      const providerId = await channel.deliver(row.id, JSON.parse(row.payload));
+      const payload = JSON.parse(row.payload);
+      if (this.suppressions) {
+        // An address suppressed after the message was accepted (a bounce or complaint meanwhile) is dropped here.
+        for (const field of /** @type {const} */ (['to', 'cc', 'bcc'])) if (payload[field]) payload[field] = this.suppressions.partition(payload[field]).allowed;
+        if (!payload.to.length) throw Object.assign(new Error('every recipient is suppressed'), { retryable: false });
+      }
+      const providerId = await channel.deliver(row.id, payload);
       const ok = this.queue.markSent(row.id, ownerToken, providerId, this.now());
       if (!ok) { this.log.warn(meta, 'lock lost before this delivery could be recorded; result discarded, another worker already reclaimed it'); return; }
       this.log.info({ ...meta, providerId, durationMs: this.now() - started }, 'delivered');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const retryable = channel ? channel.isRetryable(err) : false;
+      const retryable = /** @type {{ retryable?: boolean }} */ (err)?.retryable === false ? false : channel ? channel.isRetryable(err) : false;
       const updated = this.queue.markFailure(row, ownerToken, message, { final: !retryable, now: this.now() });
       if (!updated) { this.log.warn(meta, 'lock lost before this failure could be recorded; result discarded, another worker already reclaimed it'); return; }
       const level = updated.status === 'failed' ? 'error' : 'warn';
@@ -198,6 +208,7 @@ export class Worker {
     this.lastMaintenance = now;
     const purged = this.queue.purge(now - this.options.retentionDays * 86_400_000);
     if (purged) this.log.info({ purged }, 'purged finished messages past retention');
+    this.quota?.purge(now);
     const staleHeartbeats = this.presence.purgeStale(now, Worker.MAINTENANCE_INTERVAL_MS * 5);
     if (staleHeartbeats) this.log.debug({ staleHeartbeats }, 'purged stale worker_heartbeat rows');
   }
