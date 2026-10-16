@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Ids } from '@atc-web/atc-service-core/ids';
 
 /** @typedef {import('./db.js').Database} Database */
 /** @typedef {import('./types.js').MessageRow} MessageRow */
@@ -59,7 +60,7 @@ class Cursor {
    * @returns {{ createdAt: number, id: string }}
    */
   static decode(cursor) {
-    const m = /^(\d{1,16}):([0-9a-f-]{36})$/.exec(Buffer.from(cursor, 'base64url').toString());
+    const m = new RegExp(`^(\\d{1,16}):(${Ids.pattern("msg").slice(1, -1)})$`).exec(Buffer.from(cursor, 'base64url').toString());
     if (!m) throw new InvalidCursorError();
     return { createdAt: Number(m[1]), id: m[2] };
   }
@@ -147,7 +148,7 @@ export class Queue {
    * @returns {{ row: MessageRow, created: boolean }}
    */
   enqueue(input, now = Date.now()) {
-    const id = randomUUID();
+    const id = Ids.create('msg');
     const key = input.idempotencyKey ?? null;
     const payloadJson = JSON.stringify(input.payload);
     const result = this.stmt.insert.run(

@@ -123,18 +123,21 @@ paths:
   /v1/messages:
     post:
       operationId: atc-notify.messages.create
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
       summary: Queue a message for delivery
       description: >-
         Inserts the message and returns immediately (`202` for a newly-created message, `200` when
-        the request replays an existing `idempotencyKey`); actual delivery happens later, out of
+        the request replays an existing `Idempotency-Key`); actual delivery happens later, out of
         band, via the worker process. `channel` is always `email`; the body's `data` is additionally validated, at request time, against the named
         template's own JSON Schema (`GET /v1/templates` lists the templates this instance ships
         with, each with its schema).
 
-        **Idempotency**: `idempotencyKey`, when given, scopes one logical send per API key. Reusing
-        a key with the identical channel and payload replays the original row (`200`); reusing it
-        with a different channel or payload is a conflict (`409 IDEMPOTENCY_CONFLICT`) — the key is
-        not a slot to overwrite.
+        **Idempotency**: the `Idempotency-Key` header, when given, scopes one logical send per API
+        key for as long as the message row lives (not only 24 h as on other POSTs). Reusing a key
+        with the identical channel and payload replays the original row (`200`,
+        `Idempotent-Replayed: true`); reusing it with a different channel or payload is
+        `409 IDEMPOTENCY_MISMATCH` — the key is not a slot to overwrite.
 
         **State machine**: `queued -> processing -> sent | failed`. A `failed` message is retryable
         exactly once per call via `POST /v1/messages/{id}/retry` (full attempt-budget reset, not
@@ -158,7 +161,7 @@ paths:
               $ref: '#/components/schemas/MessageCreateEmail'
       responses:
         '200':
-          description: Idempotent replay — an existing message with the same `idempotencyKey`, channel and payload was returned unchanged.
+          description: Idempotent replay — an existing message with the same `Idempotency-Key`, channel and payload was returned unchanged.
           headers:
             location: { $ref: '#/components/headers/Location' }
             x-ratelimit-limit: { $ref: '#/components/headers/RateLimitLimit' }
@@ -203,7 +206,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '409':
-          description: '`IDEMPOTENCY_CONFLICT` — `idempotencyKey` was already used by this API key with a different channel or payload.'
+          description: '`IDEMPOTENCY_MISMATCH` — the `Idempotency-Key` was already used by this API key with a different channel or payload; `INVALID_IDEMPOTENCY_KEY` is a 400.'
           content:
             application/json:
               schema:
@@ -322,6 +325,7 @@ paths:
         delivery attempt. Scoped to the caller's own API key.
       tags: [messages]
       parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
         - $ref: '#/components/parameters/MessageId'
       responses:
         '200':
@@ -381,6 +385,8 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
     post:
       operationId: atc-notify.suppressions.create
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
       summary: Suppress an address (admin key)
       tags: [suppressions]
       requestBody:
@@ -431,6 +437,8 @@ paths:
   /v1/suppressions/events:
     post:
       operationId: atc-notify.suppressions.report
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
       summary: Report bounces and complaints (admin key)
       description: The same input as the signed hook, for a relay that holds an admin key. Hard bounces and complaints suppress at once; soft bounces after `SOFT_BOUNCE_LIMIT` (default 3).
       tags: [suppressions]
@@ -531,13 +539,19 @@ components:
         of every key). Every valid key can read `/metrics`.
 
   parameters:
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: "Optional. Repeats of this POST with the same key (per API key, 24 h) replay the first 2xx answer with `Idempotent-Replayed: true` instead of running again; the same key with another method, path or body is `409 IDEMPOTENCY_MISMATCH`, while the first still runs `409 IDEMPOTENCY_IN_PROGRESS`."
+      schema: { type: string, pattern: '^[A-Za-z0-9._:-]{8,255}$' }
     MessageId:
       name: id
       in: path
       required: true
       schema:
         type: string
-        format: uuid
+        pattern: '^msg_[0-9a-z]{6,12}[0-9a-f]{16}$'
 
   headers:
     Location:
@@ -609,7 +623,7 @@ components:
           properties:
             code:
               type: string
-              description: Stable machine-readable error code, e.g. `VALIDATION_FAILED`, `NOT_FOUND`, `IDEMPOTENCY_CONFLICT`.
+              description: Stable machine-readable error code, e.g. `VALIDATION_FAILED`, `NOT_FOUND`, `IDEMPOTENCY_MISMATCH`.
             message:
               type: string
             details:
@@ -709,7 +723,7 @@ components:
       properties:
         id:
           type: string
-          format: uuid
+          pattern: '^msg_[0-9a-z]{6,12}[0-9a-f]{16}$'
         keyId:
           type: string
           description: Id of the API key that created the message (the caller's own key unless it has the `admin` role).
@@ -837,8 +851,6 @@ components:
             Validated server-side against the named template's own JSON Schema (see the `if`/`then`
             branches below, one per template, and `GET /v1/templates` for the same schemas at
             runtime). `locale` defaults to `tr` when omitted on every template.
-        idempotencyKey:
-          $ref: '#/components/schemas/IdempotencyKey'
       allOf:
         - if:
             properties:
@@ -912,13 +924,6 @@ components:
         format: email
         maxLength: 254
 
-    IdempotencyKey:
-      type: string
-      minLength: 1
-      maxLength: 128
-      pattern: '^[\x21-\x7E]+$'
-      description: Scopes one logical send per API key. Reusing it with an identical channel+payload replays the original message; reusing it with a different one is a `409 IDEMPOTENCY_CONFLICT`.
-
     TemplateDescriptor:
       type: object
       required: [name, description, schema]
@@ -934,9 +939,12 @@ components:
 
     TemplateList:
       type: object
-      required: [items]
+      required: [items, nextCursor]
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/TemplateDescriptor'
+        nextCursor:
+          type: 'null'
+          description: Always null; the list is complete (every list answers `{ items, nextCursor }`).

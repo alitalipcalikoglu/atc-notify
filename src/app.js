@@ -3,6 +3,8 @@ import rateLimit from '@fastify/rate-limit';
 import Fastify from 'fastify';
 import { AuditClient } from '@atc-web/atc-service-core/audit';
 import { registerInfo, registerOpenApi, registerProbes, registerRequestContext, requestOptions } from '@atc-web/atc-service-core/fastify';
+import { Idempotency } from '@atc-web/atc-service-core/idempotency';
+import { Ids } from '@atc-web/atc-service-core/ids';
 import { ApiKeyAuth } from './auth.js';
 import { IdempotencyConflictError, InvalidCursorError } from './queue.js';
 import { AuditMetrics } from './audit-metrics.js';
@@ -43,9 +45,8 @@ export class MessageView {
 
 /** JSON Schemas for the HTTP surface. */
 class Schemas {
-  static uuid = { type: 'string', format: 'uuid' };
+  static messageId = { type: 'string', pattern: Ids.pattern('msg') };
   static email = { type: 'string', format: 'email', maxLength: 254 };
-  static idempotencyKey = { type: 'string', minLength: 1, maxLength: 128, pattern: '^[\\x21-\\x7E]+$' };
 
   /** @param {number} max */
   static emailList(max) {
@@ -67,12 +68,11 @@ class Schemas {
         replyTo: Schemas.email,
         data: { type: 'object' },
         unsubscribe: { type: 'boolean' },
-        idempotencyKey: Schemas.idempotencyKey,
       },
     };
   }
 
-  static idParams = { type: 'object', properties: { id: Schemas.uuid }, required: ['id'] };
+  static idParams = { type: 'object', properties: { id: Schemas.messageId }, required: ['id'] };
 
   static listQuery = {
     type: 'object',
@@ -87,7 +87,7 @@ class Schemas {
   static message = {
     type: 'object',
     properties: {
-      id: Schemas.uuid,
+      id: Schemas.messageId,
       keyId: { type: 'string' },
       channel: { type: 'string' },
       status: { type: 'string' },
@@ -186,6 +186,7 @@ export class NotifyApi {
     app.decorateRequest('apiKeyRole', 'readwrite');
     app.setErrorHandler(this.#errorHandler);
     app.addHook('onSend', AuditClient.hook(this.audit));
+    Idempotency.register(app, { raw: this.queue.db.raw });
     app.setNotFoundHandler((_request, reply) => {
       reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'route not found' } });
     });
@@ -222,7 +223,7 @@ export class NotifyApi {
       return reply.code(400).send({ error: { code: 'INVALID_CURSOR', message: err.message } });
     }
     if (err instanceof IdempotencyConflictError) {
-      return reply.code(409).send({ error: { code: 'IDEMPOTENCY_CONFLICT', message: err.message } });
+      return reply.code(409).send({ error: { code: 'IDEMPOTENCY_MISMATCH', message: err.message } });
     }
     const status = err.statusCode && err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 500;
     if (status >= 500) {
@@ -246,7 +247,8 @@ export class NotifyApi {
     });
     api.addHook('onReady', async () => this.#compileDataValidators(api));
 
-    api.post('/messages', { preHandler: this.#needWrite, config: { audit: AuditClient.route('atc-notify.message.create', (_r, b) => ({ type: 'message', id: b.id }), (_r, b) => ({ channel: b?.channel, status: b?.status })) },
+    // POST /v1/messages keeps its own, permanent Idempotency-Key dedupe (the key is stored on the message).
+    api.post('/messages', { preHandler: this.#needWrite, config: { idempotency: false, audit: AuditClient.route('atc-notify.message.create', (_r, b) => ({ type: 'message', id: b.id }), (_r, b) => ({ channel: b?.channel, status: b?.status })) },
       schema: {
         body: Schemas.emailBody(this.templates.names()),
         response: { 200: Schemas.message, 202: Schemas.message, 400: Schemas.error },
@@ -258,7 +260,7 @@ export class NotifyApi {
     api.post('/messages/:id/retry', { preHandler: this.#needWrite, config: { audit: AuditClient.route('atc-notify.message.retry', (r) => ({ type: 'message', id: /** @type {any} */ (r.params).id })) },
       schema: { params: Schemas.idParams, response: { 200: Schemas.message, 404: Schemas.error, 409: Schemas.error } },
     }, this.#retryMessage);
-    api.get('/templates', async () => ({ items: this.templates.describe() }));
+    api.get('/templates', async () => ({ items: this.templates.describe(), nextCursor: null }));
 
     // ---- suppressions (admin keys)
     const admin = { preHandler: this.#needAdmin };
@@ -378,7 +380,12 @@ export class NotifyApi {
 
   /** @type {import('fastify').RouteHandlerMethod} */
   #createMessage = async (request, reply) => {
-    const { idempotencyKey, ...payload } = /** @type {any} */ (request.body);
+    const payload = /** @type {any} */ (request.body);
+    const header = request.headers[Idempotency.HEADER];
+    if (header !== undefined && (typeof header !== 'string' || !Idempotency.KEY.test(header))) {
+      return reply.code(400).send({ error: { code: 'INVALID_IDEMPOTENCY_KEY', message: 'Idempotency-Key must be 8-255 characters of A-Z a-z 0-9 . _ : -' } });
+    }
+    const idempotencyKey = header ?? null;
     const validate = this.dataValidators.get(payload.template);
     if (!validate) throw Object.assign(new Error(`unknown template "${payload.template}"`), { statusCode: 400, code: 'UNKNOWN_TEMPLATE' });
     if (!validate(payload.data)) {
@@ -407,7 +414,7 @@ export class NotifyApi {
     // A replay (same key, same payload after the same suppression filter) is answered before the quota is looked at.
     if (idempotencyKey && this.queue.findIdempotent(request.apiKeyId, idempotencyKey)) {
       const { row } = this.queue.enqueue({ apiKeyId: request.apiKeyId, idempotencyKey, channel: payload.channel, payload });
-      return reply.header('location', `/v1/messages/${row.id}`).code(200).send(MessageView.from(row));
+      return reply.header('location', `/v1/messages/${row.id}`).header(Idempotency.REPLAYED, 'true').code(200).send(MessageView.from(row));
     }
     const recipients = [...payload.to, ...(payload.cc ?? []), ...(payload.bcc ?? [])];
     const now = Date.now();
@@ -423,6 +430,7 @@ export class NotifyApi {
     });
     request.log.info({ messageId: row.id, channel: row.channel, created, suppressed: suppressed.length }, created ? 'message queued' : 'idempotent replay');
     reply.header('location', `/v1/messages/${row.id}`);
+    if (!created) reply.header(Idempotency.REPLAYED, 'true');
     return reply.code(created ? 202 : 200).send({ ...MessageView.from(row), ...(suppressed.length ? { suppressed } : {}) });
   };
 

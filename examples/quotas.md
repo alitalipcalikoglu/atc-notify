@@ -8,7 +8,7 @@ Two counters bound how much one key can send, which matters most when a key leak
 | `KEY_DAILY_LIMIT` | the same for named keys: `shop=5000,blog=200` | none |
 | `RECIPIENT_HOURLY_LIMIT` | mails to one address per hour, over all keys | `20` |
 
-Counted when a message is accepted. An idempotent replay (same `idempotencyKey`, same payload) does not count again. Suppressed addresses left out of a message do not count either.
+Counted when a message is accepted. An idempotent replay (same `Idempotency-Key`, same payload) does not count again. Suppressed addresses left out of a message do not count either.
 
 Over a limit:
 

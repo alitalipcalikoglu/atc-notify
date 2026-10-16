@@ -17,7 +17,7 @@ async function setup(env = {}) {
   const app = await new NotifyApi({ config, queue, ...policy, presence: testPresence(), templates, channels: [channel], version: '1.0.0', logger: silentLog }).build();
   await app.ready();
   const worker = new Worker({ queue, presence: testPresence(), channels: [channel], suppressions: policy.suppressions, quota: policy.quota, log: silentLog, options: { concurrency: 2, pollMs: 50, retentionDays: 30, heartbeatMs: 1000, drainMs: 1000 } });
-  const call = (/** @type {string} */ method, /** @type {string} */ url, /** @type {any} */ payload = undefined, key = API_KEY) => app.inject({ method: /** @type {any} */ (method), url, payload, headers: { authorization: `Bearer ${key}` } });
+  const call = (/** @type {string} */ method, /** @type {string} */ url, /** @type {any} */ payload = undefined, key = API_KEY, /** @type {Record<string, string>} */ extra = {}) => app.inject({ method: /** @type {any} */ (method), url, payload, headers: { authorization: `Bearer ${key}`, ...extra } });
   return { app, queue, policy, sent, worker, call };
 }
 
@@ -65,8 +65,8 @@ test('bounce reports: hard bounces and complaints suppress at once, soft ones af
 test('quotas: recipients per key per day and mails per recipient per hour; replays do not count', async (t) => {
   const s = await setup({ KEY_DAILY_LIMIT: 'test=3', RECIPIENT_HOURLY_LIMIT: '2' });
   t.after(() => s.app.close());
-  assert.equal((await s.call('POST', '/v1/messages', { ...emailBody, to: ['r@example.com'], idempotencyKey: 'k1' })).statusCode, 202);
-  assert.equal((await s.call('POST', '/v1/messages', { ...emailBody, to: ['r@example.com'], idempotencyKey: 'k1' })).statusCode, 200, 'replay');
+  assert.equal((await s.call('POST', '/v1/messages', { ...emailBody, to: ['r@example.com'] }, undefined, { 'idempotency-key': 'quota-k1' })).statusCode, 202);
+  assert.equal((await s.call('POST', '/v1/messages', { ...emailBody, to: ['r@example.com'] }, undefined, { 'idempotency-key': 'quota-k1' })).statusCode, 200, 'replay');
   assert.equal((await s.call('POST', '/v1/messages', { ...emailBody, to: ['r@example.com'] })).statusCode, 202);
   let res = await s.call('POST', '/v1/messages', { ...emailBody, to: ['r@example.com'] });
   assert.deepEqual([res.statusCode, res.json().error.details[0].scope], [429, 'recipient']);

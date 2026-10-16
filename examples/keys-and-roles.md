@@ -20,5 +20,5 @@ curl -s -H "Authorization: Bearer $ADMIN" "$NOTIFY/v1/messages?status=failed&lim
 
 Pitfalls:
 - An unknown role is a startup error (`must be read, readwrite or admin`).
-- Idempotency keys stay scoped to the sending key; an admin key sending with the same `idempotencyKey` as another key creates its own message.
+- Idempotency keys stay scoped to the sending key; an admin key sending with the same `Idempotency-Key` as another key creates its own message.
 - `/metrics` and the other probes are not role-gated.

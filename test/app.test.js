@@ -82,8 +82,9 @@ test('POST /v1/messages validates template data and reports the path', async () 
 });
 
 test('POST /v1/messages queues, exposes status, honours idempotency and key scoping', async () => {
-  const payload = { ...emailBody, idempotencyKey: 'order-42' };
-  const first = await app.inject({ method: 'POST', url: '/v1/messages', headers: auth, payload });
+  const payload = emailBody;
+  const idem = { ...auth, 'idempotency-key': 'order-42-x' };
+  const first = await app.inject({ method: 'POST', url: '/v1/messages', headers: idem, payload });
   assert.equal(first.statusCode, 202);
   const msg = first.json();
   assert.equal(msg.status, 'queued');
@@ -95,15 +96,18 @@ test('POST /v1/messages queues, exposes status, honours idempotency and key scop
   assert.equal('data' in msg, false, 'template data never echoed');
   assert.equal(first.headers.location, `/v1/messages/${msg.id}`);
 
-  const replay = await app.inject({ method: 'POST', url: '/v1/messages', headers: auth, payload });
+  const replay = await app.inject({ method: 'POST', url: '/v1/messages', headers: idem, payload });
   assert.equal(replay.statusCode, 200);
+  assert.equal(replay.headers['idempotent-replayed'], 'true');
+  assert.match(msg.id, /^msg_[0-9a-z]{6,12}[0-9a-f]{16}$/);
+  assert.equal((await app.inject({ method: 'POST', url: '/v1/messages', headers: { ...auth, 'idempotency-key': 'bad' }, payload })).json().error.code, 'INVALID_IDEMPOTENCY_KEY');
   assert.equal(replay.json().id, msg.id);
 
   // Stage 6: the same key with a DIFFERENT payload is a conflict, not a silent success with the
   // stale original content — the key identifies one logical send.
-  const conflict = await app.inject({ method: 'POST', url: '/v1/messages', headers: auth, payload: { ...emailBody, idempotencyKey: 'order-42', to: ['different@example.com'] } });
+  const conflict = await app.inject({ method: 'POST', url: '/v1/messages', headers: idem, payload: { ...emailBody, to: ['different@example.com'] } });
   assert.equal(conflict.statusCode, 409);
-  assert.equal(conflict.json().error.code, 'IDEMPOTENCY_CONFLICT');
+  assert.equal(conflict.json().error.code, 'IDEMPOTENCY_MISMATCH');
 
   const get = await app.inject({ url: `/v1/messages/${msg.id}`, headers: auth });
   assert.equal(get.statusCode, 200);
@@ -123,7 +127,7 @@ test('POST /v1/messages queues, exposes status, honours idempotency and key scop
 
   const retry = await app.inject({ method: 'POST', url: `/v1/messages/${msg.id}/retry`, headers: auth });
   assert.equal(retry.statusCode, 409, 'queued messages cannot be retried');
-  const retryMissing = await app.inject({ method: 'POST', url: `/v1/messages/00000000-0000-4000-8000-000000000000/retry`, headers: auth });
+  const retryMissing = await app.inject({ method: 'POST', url: `/v1/messages/msg_mgx1k2ab0123456789abcdef/retry`, headers: auth });
   assert.equal(retryMissing.statusCode, 404);
 });
 

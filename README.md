@@ -97,8 +97,7 @@ Every `/v1` and `/metrics` request needs `Authorization: Bearer <secret>`. Error
   "template": "email-verification",
   "to": ["ali@example.com"],
   "cc": [], "bcc": [], "replyTo": "support@example.com",
-  "data": { "appName": "Shop", "verifyUrl": "https://shop.example/v?t=…", "expiresInMinutes": 30, "name": "Ali", "locale": "tr" },
-  "idempotencyKey": "signup-42"
+  "data": { "appName": "Shop", "verifyUrl": "https://shop.example/v?t=…", "expiresInMinutes": 30, "name": "Ali", "locale": "tr" }
 }
 ```
 
@@ -115,7 +114,8 @@ Adding a template: subclass `EmailTemplate` in `src/templates/<name>.js` (overri
 - Permanent failures stop immediately: SMTP 5xx replies other than 552.
 - A message claimed longer than `LOCK_TTL_MS` without a heartbeat (crash, or an event-loop stall long enough to miss every renewal) is reclaimed as a failed attempt — costs an attempt and follows the normal backoff/exhaustion schedule, same as any other failure (Stage 6: previously a free reset with no attempt cost). A heartbeat renews the lock every `HEARTBEAT_MS` while a send is genuinely still in flight, so an ordinary slow send never loses its lock on its own.
 - `sent` and `failed` rows are deleted after `RETENTION_DAYS`.
-- `idempotencyKey` is unique per API key; a repeat with the SAME channel and payload returns the original message instead of sending twice. A repeat with a DIFFERENT channel or payload is a `409 IDEMPOTENCY_CONFLICT` (Stage 6: previously silently returned the stale original as if it had succeeded) — the key identifies one logical send, not a slot to overwrite.
+- The `Idempotency-Key` header is unique per API key for as long as the message row lives; a repeat with the SAME channel and payload returns the original message (`200`, `Idempotent-Replayed: true`) instead of sending twice. A repeat with a DIFFERENT channel or payload is a `409 IDEMPOTENCY_MISMATCH` — the key identifies one logical send, not a slot to overwrite. Other POSTs (retry, suppressions) take the same header with the platform's 24 h replay window.
+- Ids: messages are `msg_<time><random>`, the platform's one id format; every list answers `{ items, nextCursor }`.
 
 ## Code layout
 
@@ -136,7 +136,7 @@ Class-based; dependencies are injected through constructors, `src/application.js
 
 ## Security notes
 
-- **At-least-once delivery, not exactly-once.** If the SMTP server accepts a message but this process dies before the message's local `sent` state commits, the message is retried and the same email can reach the same inbox twice. SMTP gives no server-side dedup mechanism to attach to, so this service cannot prevent it on its own. `X-Notify-Id` (the message's own id, identical across every retry) is included in the mail headers for a downstream mail-processing pipeline that chooses to read it, but nothing in the SMTP protocol itself dedupes on it. (`idempotencyKey`, above, is a separate, caller-facing concept: it dedupes repeat `POST /v1/messages` calls before a message is ever queued.)
+- **At-least-once delivery, not exactly-once.** If the SMTP server accepts a message but this process dies before the message's local `sent` state commits, the message is retried and the same email can reach the same inbox twice. SMTP gives no server-side dedup mechanism to attach to, so this service cannot prevent it on its own. `X-Notify-Id` (the message's own id, identical across every retry) is included in the mail headers for a downstream mail-processing pipeline that chooses to read it, but nothing in the SMTP protocol itself dedupes on it. (The `Idempotency-Key` header, above, is a separate, caller-facing concept: it dedupes repeat `POST /v1/messages` calls before a message is ever queued.)
 - API secrets are compared in constant time; every configured key is checked so timing does not reveal which one matched.
 - Rate limit per API key (`RATE_LIMIT_MAX` per minute) and send quotas that bound a stolen key: `DAILY_SEND_LIMIT` (recipients per key per UTC day, `KEY_DAILY_LIMIT=id=n` per key) and `RECIPIENT_HOURLY_LIMIT` (mails per address per hour, default 20); `429 QUOTA_EXCEEDED` with `Retry-After`.
 - Suppression list: hard bounces and complaints suppress an address at once, soft bounces after `SOFT_BOUNCE_LIMIT`; unsubscribes and manual entries too. Suppressed addresses are removed at acceptance (`422 RECIPIENTS_SUPPRESSED` when no `to` is left) and again right before sending. The bounce hook is HMAC-signed with a five-minute window; unsubscribe tokens are HMACs of the address, and a GET never unsubscribes (link scanners).
