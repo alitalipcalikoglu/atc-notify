@@ -27,6 +27,10 @@ logic and delivery-state bookkeeping.
   SMTP server makes the *whole service* report `503` from `/ready`, even though the read/write API
   would still function. This coupling is real and un-mitigated in the code
   today.
+Inbound only, not dependencies: provider bounce/complaint webhooks (`BOUNCE_WEBHOOK_SECRET`) and
+one-click unsubscribe links (`UNSUBSCRIBE_SECRET`, `PUBLIC_BASE_URL`) feed the suppression list;
+a message marked `transactional: true` bypasses `unsubscribe` and `complaint` suppressions but is
+still blocked by `hard_bounce`, `soft_bounce` and `manual` entries.
 Outbound webhooks are not part of this service; they are the job of `atc-webhook-out`.
 
 ## Persistence
