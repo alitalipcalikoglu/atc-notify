@@ -17,6 +17,22 @@ curl -s -X POST $NOTIFY/v1/messages -H "Authorization: Bearer $KEY" -H 'Content-
 
 When no `to` address is left: `422 RECIPIENTS_SUPPRESSED` with `details: [{ "email": "gone@example.com" }]`. A message accepted before its address was suppressed is checked again right before sending and ends `failed` with `every recipient is suppressed`.
 
+## Transactional mail
+
+A user who unsubscribed from a newsletter, or whose provider filed a complaint, must still be able to reset a password or confirm an address. Send such mail with `"transactional": true`:
+
+```bash
+curl -s -X POST $NOTIFY/v1/messages -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"channel":"email","template":"password-reset","to":["gone@example.com"],"transactional":true,"data":{…}}'
+```
+
+| Suppression reason | Ordinary mail | Transactional mail |
+|---|---|---|
+| `unsubscribe`, `complaint` | dropped | sent |
+| `hard_bounce`, `soft_bounce`, `manual` | dropped | dropped |
+
+Only `readwrite` and `admin` keys may set the flag (`403 FORBIDDEN` for others); it cannot be combined with `unsubscribe`. atc-auth sets it on every mail it sends, the console on the messages it sends by hand.
+
 ## Managing the list
 
 ```bash

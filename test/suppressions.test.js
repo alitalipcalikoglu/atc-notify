@@ -42,6 +42,20 @@ test('suppression list: admin only, manual add and remove, sends to suppressed a
   assert.equal((await s.call('POST', '/v1/messages', { ...emailBody, to: ['gone@example.com'] })).statusCode, 202, 'deliverable again');
 });
 
+test('transactional mail: reaches unsubscribed and complaining addresses, never bounced or operator-suppressed ones; trusted keys only', async (t) => {
+  const s = await setup({ NOTIFY_API_KEYS: `test:${API_KEY},other:${OTHER_KEY}:read,ops:${ADMIN_KEY}:admin` });
+  t.after(() => s.app.close());
+  for (const [email, reason] of [['left@example.com', 'unsubscribe'], ['angry@example.com', 'complaint'], ['dead@example.com', 'hard_bounce'], ['byhand@example.com', 'manual']]) s.policy.suppressions.add({ email, reason: /** @type {any} */ (reason), source: 'test' });
+  let res = await s.call('POST', '/v1/messages', { ...emailBody, to: ['left@example.com', 'angry@example.com', 'dead@example.com', 'byhand@example.com'], transactional: true });
+  assert.equal(res.statusCode, 202, res.body);
+  assert.deepEqual([res.json().to, res.json().suppressed], [['left@example.com', 'angry@example.com'], ['dead@example.com', 'byhand@example.com']]);
+  res = await s.call('POST', '/v1/messages', { ...emailBody, to: ['left@example.com'] });
+  assert.equal(res.json().error.code, 'RECIPIENTS_SUPPRESSED', 'ordinary mail still respects the unsubscribe');
+  assert.equal((await s.call('POST', '/v1/messages', { ...emailBody, to: ['dead@example.com'], transactional: true })).json().error.code, 'RECIPIENTS_SUPPRESSED', 'a bounced address gets nothing either way');
+  assert.equal((await s.call('POST', '/v1/messages', { ...emailBody, to: ['left@example.com'], transactional: true, unsubscribe: true })).statusCode, 400, 'not both');
+  assert.equal((await s.call('POST', '/v1/messages', { ...emailBody, to: ['left@example.com'], transactional: true }, OTHER_KEY)).statusCode, 403, 'a read key cannot send at all, so it cannot mark transactional mail');
+});
+
 test('bounce reports: hard bounces and complaints suppress at once, soft ones after the limit; the signed hook checks its signature', async (t) => {
   const s = await setup();
   t.after(() => s.app.close());

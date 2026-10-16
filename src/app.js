@@ -68,6 +68,7 @@ class Schemas {
         replyTo: Schemas.email,
         data: { type: 'object' },
         unsubscribe: { type: 'boolean' },
+        transactional: { type: 'boolean' },
       },
     };
   }
@@ -401,11 +402,17 @@ export class NotifyApi {
       if (!this.unsubscribe) return reply.code(400).send({ error: { code: 'UNSUBSCRIBE_UNAVAILABLE', message: 'one-click unsubscribe needs PUBLIC_BASE_URL and UNSUBSCRIBE_SECRET' } });
       if (payload.to.length !== 1 || payload.cc?.length || payload.bcc?.length) return reply.code(400).send({ error: { code: 'VALIDATION_FAILED', message: 'unsubscribe links need exactly one "to" and no cc/bcc' } });
     }
+    // Transactional mail (password reset, verification, security notices) reaches an address that unsubscribed or
+    // complained: the account must stay reachable. Bounced addresses still get nothing. Only trusted keys may say so.
+    if (payload.transactional) {
+      if (request.apiKeyRole !== 'readwrite' && request.apiKeyRole !== 'admin') return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'transactional mail needs a readwrite or admin key' } });
+      if (payload.unsubscribe) return reply.code(400).send({ error: { code: 'VALIDATION_FAILED', message: 'a transactional message cannot carry an unsubscribe link' } });
+    }
     /** @type {string[]} */
     const suppressed = [];
     for (const field of /** @type {const} */ (['to', 'cc', 'bcc'])) {
       if (!payload[field]) continue;
-      const p = this.suppressions.partition(payload[field]);
+      const p = this.suppressions.partition(payload[field], { transactional: payload.transactional === true });
       suppressed.push(...p.suppressed);
       payload[field] = p.allowed;
       if (!payload[field].length && field !== 'to') delete payload[field];

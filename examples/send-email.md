@@ -65,6 +65,12 @@ curl -s $NOTIFY/v1/messages/70f22fb3-792d-4616-9d9f-7693f4db2dbc -H "Authorizati
 
 Up to 10 addresses each, no duplicates. Every address is validated as an email.
 
+```json
+{ "transactional": true }
+```
+
+Marks account mail the recipient must be able to receive (password reset, e-mail verification, MFA and new-device notices). An address that clicked unsubscribe or filed a complaint still gets it; an address that bounced, or that an operator suppressed, still does not. Needs a `readwrite` or `admin` key (`403 FORBIDDEN` otherwise) and cannot be combined with `unsubscribe` (`400`). atc-auth and the console send it on every mail.
+
 ## What the recipient sees
 
 Subject and body come from the template (`tr` or `en`), the `From` header from `SMTP_FROM`. Every value in `data` is HTML-escaped; `verifyUrl` must be `http(s)`, anything else is dropped from the button. The message carries an `X-Notify-Id` header with the message id.

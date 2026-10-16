@@ -85,10 +85,21 @@ export class SuppressionStore {
    * Split recipients into allowed and suppressed.
    * @param {string[]} emails
    */
-  partition(emails) {
+  /** Reasons that keep blocking transactional mail: the address itself is dead or an operator said so. */
+  static ALWAYS = new Set(['hard_bounce', 'soft_bounce', 'manual']);
+
+  /**
+   * Split addresses into deliverable and suppressed. Transactional mail (account security) ignores
+   * `unsubscribe` and `complaint` entries: those are about wanting less mail, not about a dead address.
+   * @param {string[]} emails @param {{ transactional?: boolean }} [o]
+   */
+  partition(emails, { transactional = false } = {}) {
     /** @type {string[]} */ const allowed = [];
     /** @type {string[]} */ const suppressed = [];
-    for (const e of emails) (this.get(e) ? suppressed : allowed).push(e);
+    for (const e of emails) {
+      const row = this.get(e);
+      (row && (!transactional || SuppressionStore.ALWAYS.has(row.reason)) ? suppressed : allowed).push(e);
+    }
     return { allowed, suppressed };
   }
 

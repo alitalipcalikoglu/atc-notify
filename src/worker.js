@@ -177,7 +177,7 @@ export class Worker {
       const payload = JSON.parse(row.payload);
       if (this.suppressions) {
         // An address suppressed after the message was accepted (a bounce or complaint meanwhile) is dropped here.
-        for (const field of /** @type {const} */ (['to', 'cc', 'bcc'])) if (payload[field]) payload[field] = this.suppressions.partition(payload[field]).allowed;
+        for (const field of /** @type {const} */ (['to', 'cc', 'bcc'])) if (payload[field]) payload[field] = this.suppressions.partition(payload[field], { transactional: payload.transactional === true }).allowed;
         if (!payload.to.length) throw Object.assign(new Error('every recipient is suppressed'), { retryable: false });
       }
       const providerId = await channel.deliver(row.id, payload);
