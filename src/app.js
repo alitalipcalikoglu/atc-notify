@@ -248,7 +248,7 @@ export class NotifyApi {
     api.addHook('onReady', async () => this.#compileDataValidators(api));
 
     // POST /v1/messages keeps its own, permanent Idempotency-Key dedupe (the key is stored on the message).
-    api.post('/messages', { preHandler: this.#needWrite, config: { idempotency: false, audit: AuditClient.route('atc-notify.message.create', (_r, b) => ({ type: 'message', id: b.id }), (_r, b) => ({ channel: b?.channel, status: b?.status })) },
+    api.post('/messages', { preHandler: this.#needWrite, config: { audit: AuditClient.route('atc-notify.message.create', (_r, b) => ({ type: 'message', id: b.id }), (_r, b) => ({ channel: b?.channel, status: b?.status })) },
       schema: {
         body: Schemas.emailBody(this.templates.names()),
         response: { 200: Schemas.message, 202: Schemas.message, 400: Schemas.error },
@@ -257,7 +257,7 @@ export class NotifyApi {
 
     api.get('/messages', { schema: { querystring: Schemas.listQuery } }, this.#listMessages);
     api.get('/messages/:id', { schema: { params: Schemas.idParams, response: { 200: Schemas.message, 404: Schemas.error } } }, this.#getMessage);
-    api.post('/messages/:id/retry', { preHandler: this.#needWrite, config: { audit: AuditClient.route('atc-notify.message.retry', (r) => ({ type: 'message', id: /** @type {any} */ (r.params).id })) },
+    api.post('/messages/:id/retry', { preHandler: this.#needWrite, config: { idempotent: true, audit: AuditClient.route('atc-notify.message.retry', (r) => ({ type: 'message', id: /** @type {any} */ (r.params).id })) },
       schema: { params: Schemas.idParams, response: { 200: Schemas.message, 404: Schemas.error, 409: Schemas.error } },
     }, this.#retryMessage);
     api.get('/templates', async () => ({ items: this.templates.describe(), nextCursor: null }));
@@ -275,7 +275,7 @@ export class NotifyApi {
       if (!row) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'address is not suppressed' } });
       return { suppression: NotifyApi.#suppressionView(row) };
     });
-    api.post('/suppressions', { ...admin, config: { audit: AuditClient.route('atc-notify.suppression.create', target, (r) => ({ reason: /** @type {any} */ (r.body).reason ?? 'manual' })) }, schema: { body: Schemas.addSuppression } }, async (request, reply) => {
+    api.post('/suppressions', { ...admin, config: { idempotent: true, audit: AuditClient.route('atc-notify.suppression.create', target, (r) => ({ reason: /** @type {any} */ (r.body).reason ?? 'manual' })) }, schema: { body: Schemas.addSuppression } }, async (request, reply) => {
       const b = /** @type {{ email: string, reason?: any, note?: string }} */ (request.body);
       const row = this.suppressions.add({ email: b.email, reason: b.reason ?? 'manual', source: `key:${request.apiKeyId}`, note: b.note ?? null });
       return reply.code(201).send({ suppression: NotifyApi.#suppressionView(row) });
@@ -284,7 +284,7 @@ export class NotifyApi {
       if (!this.suppressions.remove(/** @type {{ email: string }} */ (request.params).email)) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'address is not suppressed' } });
       return reply.code(204).send();
     });
-    api.post('/suppressions/events', { ...admin, config: { audit: AuditClient.route('atc-notify.suppression.report', () => ({ type: 'suppression', id: 'events' }), (_r, b) => ({ suppressed: b?.suppressed })) }, schema: { body: Schemas.bounceEvents } }, async (request) => this.#report(/** @type {any} */ (request.body).events, `key:${request.apiKeyId}`));
+    api.post('/suppressions/events', { ...admin, config: { idempotent: true, audit: AuditClient.route('atc-notify.suppression.report', () => ({ type: 'suppression', id: 'events' }), (_r, b) => ({ suppressed: b?.suppressed })) }, schema: { body: Schemas.bounceEvents } }, async (request) => this.#report(/** @type {any} */ (request.body).events, `key:${request.apiKeyId}`));
   }
 
   /** @param {import('./suppressions.js').SuppressionRow} r */

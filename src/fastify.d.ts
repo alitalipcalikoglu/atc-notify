@@ -8,7 +8,7 @@ declare module 'fastify' {
   }
   interface FastifyContextConfig {
     audit?: import('@atc-web/atc-service-core/audit').AuditRouteConfig;
-    /** false: the route deduplicates by Idempotency-Key itself (core Idempotency leaves it alone). */
-    idempotency?: boolean;
+    /** Opt in to Idempotency-Key replay (core Idempotency); never on routes answering with secrets. */
+    idempotent?: boolean;
   }
 }
